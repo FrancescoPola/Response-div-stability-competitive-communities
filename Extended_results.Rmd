@@ -243,7 +243,7 @@ In the whole analysis, we calculated the temporal stability of total community b
 ## discard all the rows that are part of time stretches where entire microcosms has (seemingly) gone extinct
 #%>%dplyr::filter(is_after_first_zero_day==FALSE)
 
-complete_aggr<-aggr_ts%>%group_by(composition,nutrients,temperature,sample_ID)%>%reframe(
+complete_aggr<-aggr_ts %>%group_by(composition,nutrients,temperature,sample_ID)%>%reframe(
   avg_w_sumslopes=mean(sum_w_slopes,na.rm = T),
   abs_sum_slope=mean(abs_sum_slope),
   magnitude=mean(mean_abs_slope),
@@ -327,9 +327,9 @@ combined_plot<- wrap_elements(combined_plot) +
     plot.tag = element_text(size = rel(2.5), angle = 90),
     plot.tag.position = "left"
   )
-
+combined_plot
 # expression(atop("Temporal stability", log[10]("mean/s.d.")))
-ggsave("figures_ms/fig.1.png", plot = combined_plot, width = 14, height = 8, dpi = 600)
+#ggsave("figures_ms/fig.1.png", plot = combined_plot, width = 14, height = 8, dpi = 600)
 
 
 ```
@@ -528,6 +528,7 @@ Then, we compared the variance explained by the full model compared to a model c
 
 
 ### Full model - balance and divergence
+
 ```{r model_check3, fig.align="center", fig.height=9, fig.width=12, include=TRUE, echo=TRUE}
 lm_div_balance <- lm(data=complete_aggr,log10(stability)~log10(balance_f)+divergence)
 
@@ -843,7 +844,41 @@ model_R_F <- lm(log10(1/CV) ~ log10(balance_f) +log10(balance_r) , data = comple
 
 ```
 
-**Table 7**: Type III anova table of the model with interaction between balance and type (fundamental vs realised) as predictors of stability.
+**Table 7**: Anova table of the model with only realised balance vs one with both realised and fundamental balance as predictors of stability.
+```{r include = TRUE, echo=TRUE}
+anova5 <- anova(model_F, model_R_F)
+
+anova_tidy5 <- broom::tidy(anova5)
+# Display the tidy ANOVA table using gt with formatted p-values and adjusted size
+anova_tidy5 %>%
+  gt() %>%
+  cols_label(
+    term = "Term",
+    sumsq = "Sum of Squares",
+    df = "DF",
+    statistic = "F Statistic",
+    p.value = "p-value"
+  ) %>%
+  fmt_number(
+    columns = vars(p.value),
+    decimals = 3
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(p.value),
+      rows = p.value < 0.05
+    )
+  ) %>%
+  tab_options(
+    table.width = px(800),            # Adjust table width (e.g., 400px)
+    table.font.size = px(12),        # Adjust font size (e.g., 12px)
+    data_row.padding = px(10)         # Adjust row padding (e.g., 4px for more compact rows)
+  )
+
+```
+
+**Table 7**: Linear model results for the interaction between balance and type (fundamental vs realised) as predictors of stability for richness level.
 ```{r}
 # produce publication ready anova table using gtsummary
 
@@ -854,48 +889,9 @@ performance(model_F) %>%
 
 ```
 
-No significant difference in the slope of fundamental and realised balance was found.
+A model with both fundamental and realised balance as predictors improved very little the variance explained by the model.
 
 
-### Balance: realised vs fundamental by richness level
-
-
-**Table 7**: Linear model results for the interaction between balance and type (fundamental vs realised) as predictors of stability for richness level.
-
-```{r}
-# model above by richness level and anova table
-
-# Generate a tidy table with gt
-tidy_results <- main_r_dd %>%
-  nest(data = -richness) %>%
-  mutate(
-    model = map(data, ~ lm(log10(1/CV) ~ log10(balance) * type, data = .x)),
-    results = map(model, broom::tidy)
-  ) %>%
-  unnest(results) %>%
-  dplyr::filter(term == "log10(balance):typerealised") %>%  # Filter for interaction term
-  dplyr::select(richness, term, estimate, std.error, statistic, p.value) %>%  # Select relevant columns
-  dplyr::rename(
-    Richness = richness,
-    Term = term,
-    Estimate = estimate,
-    Std_Error = std.error,
-    T_Value = statistic,
-    P_Value = p.value
-  ) %>%
-  gt() %>%
-  tab_header(title = "Regression Results for log10(balance):type (Realised)") %>%
-  fmt_number(columns = vars(Estimate, Std_Error, T_Value, P_Value), decimals = 3) %>%
-  tab_style(
-    style = cell_text(weight = "bold"),
-    locations = cells_body(columns = vars(P_Value), rows = P_Value < 0.05)
-  )
-
-tidy_results
-
-```
-
-Even within each richness level, the slope of fundamental and realised balance is never significantly different.
 
 
 # Linear models
@@ -957,7 +953,7 @@ In summary, our findings show that temporal stability is significantly influence
 # produce publication ready anova table using gtsummary
 
 # Get ANOVA table using car::Anova for Type II sum of squares
-anova_table <- car::Anova(lm_full, type = "III")
+anova_table <- car::Anova(lm_full, type = "II")
 
 # Convert to tidy format
 anova_tidy <- broom::tidy(anova_table)
@@ -994,20 +990,23 @@ anova_tidy %>%
 ```
 
 
-### Interaction between temperature and nutrients
+
+
+## Interaction between temperature and nutrients
 
 We may expect and interactive effect of the environmental variables on stability. We thus build a linear model with interaction between temperature and nutrients.
 However, there is high collinearity between temperature and nutrients, which may affect the model results. 
 
-```{r model_check_int, fig.cap='model check 1.', fig.align="center", fig.height=9, fig.width=12, include=TRUE, echo=TRUE}
-lm_full_int<-lm(data=complete_aggr,log10(stability)~log10(balance_f)+(richness)+nutrients*temperature)
+<!-- ```{r model_check_int, fig.cap='model check 1.', fig.align="center", fig.height=9, fig.width=12, include=TRUE, echo=TRUE} -->
+<!-- lm_full_int<-lm(data=complete_aggr,log10(stability)~log10(balance_f)+(richness)+nutrients*temperature) -->
 
-# check model assumptions
-check_model(lm_full_int)
-```
+<!-- # check model assumptions -->
+<!-- check_model(lm_full_int) -->
+<!-- ``` -->
 
 
 So we transformed nutrients and temperature to numeric, and transformed temperature regimes in values = 1, 2, 3. Then, we centered the variables to avoid collinearity with the interaction term. 
+
 ```{r model_check_int2, fig.cap='model check 1.', fig.align="center", fig.height=9, fig.width=12, , include=TRUE, echo=TRUE}
 # transform nutrients and temperature to numeric. For this the units need to be removed, and temperature regimes should be transformed in values = 1, 2, 3
 complete_aggr_2<- complete_aggr %>%
@@ -1027,24 +1026,43 @@ complete_aggr_2<- complete_aggr %>%
   )
 
 
-
-
 # Fit the linear model with interaction
-lm_full_int<-lm(data=complete_aggr_2,log10(stability)~log10(balance_f)+(richness)+scale(nutrients)*scale(temperature))
+lm_full_int<-lm(data=complete_aggr_2,log10(stability)~log10(balance_f)+scale(nutrients)*scale(temperature)+richness)
 
 # check model assumptions
-check_model(lm_full_int)
-
+# check_model(lm_full_int)
 
 
 ```
 
-**Table 10**: Type III anova table of the model with interaction between temperature and nutrients as predictors of stability.
+
+**Table 10**: Linear model results for the effects of balance, richness, nutrients, and temperature on community stability. Estimates are presented with 95% confidence intervals and p-values. 
+```{r}
+# produce publication ready table using gtsummary::tbl_regression
+
+# Generate the regression table with enhanced styling
+
+gtsummary::tbl_regression(lm_full_int,
+               add_estimate_to_reference_row = TRUE, # Adds reference values for categorical predictors
+               add_pairwise_contrasts = TRUE) %>% 
+  # Customize table elements
+  gtsummary::modify_header(label = "**Predictor**", estimate = "**Estimate**", conf.int = "**95% CI**", p.value = "**p-value**") %>%
+  gtsummary::modify_footnote(everything() ~ NA) %>% # Remove default footnotes for clean look
+  gtsummary::modify_spanning_header(c("estimate",  "p.value") ~ "**Linear Regression Results**") %>% # Title
+  gtsummary::bold_labels() %>%
+  gtsummary::as_gt() 
+
+```
+
+
+The interpretation of the model's results does not change compared to the model without interaction. Indeed, the interaction term between temperature and nutrients was not significant, suggesting that the relationship between temperature and nutrients does not significantly affect stability. However, the estimate of balance, although still significant, is slightly lower than in the model without interaction. 
+
+**Table 10**: Type I anova table of the model with interaction between temperature and nutrients as predictors of stability.
 
 ```{r}
 
 # Get ANOVA table using car::Anova for Type III sum of squares
-anova_table <- car::Anova(lm_full_int, type = "III")
+anova_table <- anova(lm_full_int)
 
 # Convert to tidy format
 anova_tidy <- broom::tidy(anova_table)
@@ -1052,7 +1070,7 @@ anova_tidy <- broom::tidy(anova_table)
 # Display the tidy ANOVA table using gt with formatted p-values and adjusted size
 anova_tidy %>%
   gt() %>%
-  tab_header(title = "Type III ANOVA Table for Linear Model") %>%
+  tab_header(title = "Type I ANOVA Table for Linear Model") %>%
   cols_label(
     term = "Term",
     sumsq = "Sum of Squares",
@@ -1073,40 +1091,22 @@ anova_tidy %>%
   ) %>%
   tab_options(
     table.width = px(800),            # Adjust table width (e.g., 400px)
-    table.font.size = px(20),        # Adjust font size (e.g., 12px)
+    table.font.size = px(16),        # Adjust font size (e.g., 12px)
     data_row.padding = px(10)         # Adjust row padding (e.g., 4px for more compact rows)
   )
 
 ```
 
 
-No interaction between nutrients and temperature was found to significantly affect stability. We thus retain the simplest model without interaction term. 
 
 
-```{r}
 
-lm_full_int_2<-lm(data=complete_aggr_2,log10(stability)~scale(nutrients)*scale(temperature))
 
-summary(lm_full_int_2)
-
-lm_full_int_3<-lm(data=complete_aggr_2,log10(stability)~scale(nutrients)*scale(temperature)+log10(balance_f))
-
-summary(lm_full_int_3)
-
-car::Anova(lm_full_int_3,type="II")
-
-group_env<-complete_aggr_2%>%nest(data=-treatment)%>%mutate(
-    model = map(data, ~ lm(log10(1/CV) ~ log10(balance_r) , data = .x)),
-    results = map(model, broom::glance)
-  ) %>%
-  unnest(results)
-
-```
 
 # Asynchrony
 Response diversity (aka balance) has been suggested as a mechanism that promotes temporal stability of community biomass by promoting species asynchrony.
 
-We thus calculated the asynchrony index suggested by Gross et al. (2014)[https://www.journals.uchicago.edu/doi/epdf/10.1086/673915] to calculate the effect of asynchrony on temporal stability and to see how reponse diversity relate to asynchrony.
+We thus calculated the asynchrony index suggested by [Gross et al. 2014](https://www.journals.uchicago.edu/doi/epdf/10.1086/673915) to calculate the effect of asynchrony on temporal stability and to see how reponse diversity relate to asynchrony.
 The index ranges between -1 and 1, with -1 indicating perfect asyncrony and 1 being perfectly synchronous, and 0 indicating random variation.
 
 
@@ -1232,9 +1232,9 @@ cor.test((-1*async_aggr$synchrony_Gross),(async_aggr$balance_f))
 # Population stability
 
 The relationship between community stability and the stability of the individual populations that make up the community is a key question in community ecology. Importantly, community stability can result from low population stability, if populations fluctuate asynchronously, or from high population stability, if populations do not fluctuate much.
-Synthesis of the literature suggests diversity can have a positive or negantive effect on population stability (Campbell et al 2010)[https://nsojournals.onlinelibrary.wiley.com/doi/full/10.1111/j.1600-0706.2010.18768.x] and (Xu et al 2021)[https://onlinelibrary.wiley.com/doi/full/10.1111/ele.13777].
+Synthesis of the literature suggests diversity can have a positive or negantive effect on population stability [Campbell et al 2010](https://nsojournals.onlinelibrary.wiley.com/doi/full/10.1111/j.1600-0706.2010.18768.x) and (Xu et al 2021)[https://onlinelibrary.wiley.com/doi/full/10.1111/ele.13777].
 
-Theoretical work has suggested that community stability is a product of two quantities: the (a)synchrony of population fluctuations, and an average species-level population stability that is weighted by relative abundance (Thibaut & Connolly 2013)[https://onlinelibrary.wiley.com/doi/full/10.1111/ele.12019]. 
+Theoretical work has suggested that community stability is a product of two quantities: the (a)synchrony of population fluctuations, and an average species-level population stability that is weighted by relative abundance [Thibaut & Connolly 2013](https://onlinelibrary.wiley.com/doi/full/10.1111/ele.12019). 
 
 Critically, a balance value close to zero can result from high response diversity, but also from high population stability (population biomass does not change largely over time).
 We want to look now at whether our new metric of balance can capture these two stabilising mechanisms.
@@ -1390,3 +1390,71 @@ Model Fit: The model has an excellent fit, as indicated by the fit indices.
 Stability: Community stability is strongly influenced by both population stability and asynchrony among species, with population stability being the stronger predictor.
 Asynchrony and Balance: Asynchrony decreases with increasing balance and nutrients, suggesting that these factors promote more synchronized fluctuations among species.
 Population Stability and Nutrients: Higher nutrient levels are associated with increased population stability, suggesting that nutrient availability supports stable population dynamics. Conversely, higher balance is associated with decreased population stability.
+
+
+
+# When will asynchrony be more important than population stability?
+```{r}
+source("r/our_functions.r")
+## Create the communities
+num_spp <- c(2, 4, 8, 16)
+max_minus_min <- round(seq(1, 7.5, length = 45),3)
+mean <- round(seq(-5, 5, length = 49),3)
+rd_vals <- function(num_spp, max_minus_min, mean) {
+  seq(mean-max_minus_min/2, mean+max_minus_min/2, length = num_spp)
+}
+dd <- crossing(num_spp,
+               max_minus_min,
+               mean) %>%
+  rowwise() %>%
+  mutate(rd_vals = list(rd_vals(num_spp, max_minus_min, mean))) %>%
+  unnest(cols = rd_vals)
+```
+
+```{r}
+## calculate the diversity metrics
+summary_stats <- dd %>%
+  group_by(num_spp, max_minus_min, mean) %>%
+  summarise(dissimilarity = resp_div(rd_vals,sign_sens = FALSE),
+            divergence = resp_div(rd_vals,sign_sens = TRUE),
+            balance = abs(sum(rd_vals)),
+            magnitude = sum(abs(rd_vals))) %>%
+  pivot_longer(names_to = "variable", values_to = "value", 4:5)
+
+
+```
+
+
+```{r}
+# plot summary stats balance vs magnitude by num_spp
+summary_stats %>%
+  ggplot(aes(x = balance, y = magnitude)) +
+  geom_point() +
+  facet_wrap( ~ num_spp, scales = "free") +
+  xlab("Balance") +
+  ylab("Magnitude")
+
+# create a new column called range with the range of magnitude values for each balance value
+summary_stats <- summary_stats %>%
+  group_by(num_spp, balance) %>%
+  mutate(range = max(magnitude) - min(magnitude),
+         mean = mean(magnitude))
+
+
+
+
+library(scales)
+# modify the above plot so that the gradient is present in each panel
+summary_stats %>%
+  group_by(num_spp) %>%
+  mutate(magnitude_rescaled = rescale(balance / magnitude)) %>% # Rescale within each group
+  ggplot(aes(x = balance, y = magnitude, color = magnitude_rescaled)) +
+  geom_point() +
+  facet_wrap(~num_spp, scales = "free") +
+  xlab("Balance") +
+  ylab("Magnitude") +
+  scale_color_viridis_c(option = "plasma") +
+  labs(color = "Community 1/Divergence") +
+  theme_minimal()
+
+```
