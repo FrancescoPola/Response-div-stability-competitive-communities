@@ -257,7 +257,6 @@ complete_aggr<-full_join(divergence_df,complete_aggr,by=join_by(composition,nutr
 
 
 
-
 ```
 
 ### Effect of T, N and R
@@ -1257,9 +1256,12 @@ pop_aggr<-pop_aggr%>%group_by(sample_ID)%>%full_join(async_aggr,pop_aggr,by="sam
 plot_pop_aggr_balance<-ggplot(data=pop_aggr, aes(y=log10(stability),x=log10(1/w_pop_CV)))+
   geom_point(size = 3.5, alpha = 0.65)+
   geom_smooth(method="lm", linewidth = 2)+
-  theme_classic() 
+  theme_classic(base_size = 25) +
+  labs(x = "log10(population stability", y = "log10(community stability)")
 
 plot_pop_aggr_balance
+
+#ggsave("figures_ms/fig.pop_stab.png", plot = plot_pop_aggr_balance, width = 9, height = 6, dpi = 600)
 
 
 # Do plot pop_stability vs balance and compare with balance vs asynchrony
@@ -1454,7 +1456,7 @@ summary_stats %>%
   xlab("Balance") +
   ylab("Magnitude") +
   scale_color_viridis_c(option = "plasma") +
-  labs(color = "Community 1/Divergence") +
-  theme_minimal()
+  labs(color = "Community Imbalance", x = "Symmetry") +
+  theme_bw()
 
 ```
