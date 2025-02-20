@@ -1034,7 +1034,7 @@ plot_all_combi
 
 
 We can see that imbalance increases with temperature, and that the relationship is the same in selected vs non selected community compositions. This suggests that imbalance is intrinsically dependent on temperatures, and that the species responses are more similar when the environment fluctuates at higher temperatures.
-Inevitably, this will affect the stability of the community, as we have seen in the previous analysis. Yet, it also mean that the effect of imbalance on stability is not independent of temperature, or more generally, of the environmental conditions. Indeed, temperature and nutrients have been used to estimate species' responses, and thus imbalance ineherently depends on the environment.
+Inevitably, this will affect the stability of the community, as we have seen in the previous analysis. Yet, it also means that the effect of imbalance on stability is not independent of temperature, or more generally, of the environmental conditions. Indeed, temperature and nutrients have been used to estimate species' responses, and thus imbalance inherently depends on the environment.
 
 Let's look at the variance explained by imbalance and the environment on stability.
 ```{r Rsquared,  fig.align="center", fig.height=6, fig.width=12}
@@ -1501,13 +1501,17 @@ model1C <- '
 
 # Fit the model
 
-fit1C <- sem(model1C,estimator="MLM",meanstructure = TRUE,data = sem_aggr3%>%dplyr::filter(!is.na(asynchrony_Gross)))
+fit1C <- sem(model1C,estimator="MLM",meanstructure = TRUE,data = sem_aggr3)
 #modificationindices(fit1C)
 
 # Summarize the results
 summary(fit1C, standardized = TRUE,rsquare=T, fit.measures = TRUE)
 
 ```
+
+
+
+
 
 ```{r SEM, fig.cap = 'SEM.', fig.align="center", fig.height=6, fig.width=8}
 knitr::include_graphics(("figures_ms/SEM_3.png"))
@@ -1518,7 +1522,7 @@ knitr::include_graphics(("figures_ms/SEM_3.png"))
 **Model Fit Indices**
 The model fit indices suggest that the model fits the data well.
 
-*Chi-Square Test (User Model)*: The chi-square test statistic for the user model is χ 2 =1.626 (scaled = 1.465) with 3 degrees of freedom and a p-value of 0.653 (scaled = 0.690). This indicates a good fit, as the test is non-significant, suggesting no significant difference between the observed and model-implied covariance matrices.
+*Chi-Square Test (User Model)*: The chi-square test statistic for the user model is χ 2 =1.626 (scaled = 1.465) with 3 degrees of freedom and a p-value of 0.475 (scaled = 0.501). This indicates a good fit, as the test is non-significant, suggesting no significant difference between the observed and model-implied covariance matrices.
 
 *Comparative Fit Index (CFI)* and *Tucker-Lewis Index (TLI)*: Both CFI and TLI values are 1.000, indicating an excellent model fit. Values close to or above 0.95 are generally considered good.
 
@@ -1559,6 +1563,7 @@ Model Fit: The model has an excellent fit, as indicated by the fit indices.
 Stability: Community stability is strongly influenced by both population stability and asynchrony among species, with population stability being the stronger predictor.
 Asynchrony and Imbalance: Asynchrony decreases with increasing imbalance and nutrients, suggesting that these factors promote more synchronized fluctuations among species.
 Population Stability and Nutrients: Higher nutrient levels are associated with increased population stability, suggesting that nutrient availability supports stable population dynamics. Conversely, higher imbalance is associated with decreased population stability.
+
 
 
 

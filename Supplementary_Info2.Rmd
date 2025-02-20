@@ -357,10 +357,10 @@ plot_regression_day <- ggplot(dens, aes(x = day, y = log(density), color = as.fa
 plot_regression_day
 ```
 
-## GAMs to fit responde surface 
+## GAMs to fit response surface 
 
-We focus on the intrinsic rate of growth (r). This is because the intrisic rate of growth has been shown to be a better predictor of community temporal stability than carrying capacity (K) (Ross et al 2023) [https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/2041-210X.14087]. 
-We are going to fit response surfaces using the calculated r for all species using GAMs. Then we are also going to use r as the species' trait to calculate potential response diversity, as well as response diversity when the trajecotry of the environmental change is known. The rationale is that r is likely of more relevance if the environmental change of interest occurs rapidly, since r provides information on a population's ability to rapidly bounce back after disturbance. In the upcoming experiment, we will have temperature fluctuating relatively fast, and so we decide now to focus on r. 
+We focus on the intrinsic rate of growth (r). This is because the intrinsic rate of growth has been shown to be a better predictor of community temporal stability than carrying capacity (K) (Ross et al 2023) [https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/2041-210X.14087]. 
+We are going to fit response surfaces using the calculated r for all species using GAMs.  The rationale is that r is likely of more relevance if the environmental change of interest occurs rapidly, since r provides information on a population's ability to rapidly bounce back after disturbance. In the upcoming experiment, we will have temperature fluctuating relatively fast, and so we decide now to focus on r. 
 
 Use GAMs to fit response surface of r and K 
 ```{r results='hide', echo=FALSE, warning=FALSE}
@@ -598,7 +598,7 @@ tetrahymena_plot + surface_tetrahymena
 
 # Response diversity with known direction of environmental change
 
-Now we calculate RD with known trajecory of environmental change, i.e. the one we are going to apply in the experiment. 
+Now we calculate RD with known trajectory of environmental change, i.e. the one we are going to apply in the experiment. 
 
 - Create a data set with environmental conditions that we may use in the experiment and calculate RD knowing the trajecotry of the environmental change.
 
@@ -730,7 +730,7 @@ df_slopes<-df_slopes%>%mutate(nutrients=paste0(nutrients," g/L"),
 ```
 
 
-## Calculate diveregence for all possible compositions
+## Calculate divergence for all possible compositions
 
 
 ```{r communities_all, fig.cap='Community compositions that were used in the experiment to create, for each richness level, a gradient of response diversity. Letter represent different species: C = Colpidium, S = Spirostomum, D = Dexiostoma, P = Paramecium, L = Loxocephalus', fig.align="center", fig.height=16, fig.width=25}
@@ -835,9 +835,6 @@ plot_selection_div
 ```
 
 
-```{r}
-
-```
 
 
 
