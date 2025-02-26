@@ -1,0 +1,395 @@
+---
+title: "Species_interaction_analysis"
+date: "2025-01-27"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    code_folding: hide
+    keep_md: no
+    fig_caption: false  
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+library("ggplot2")
+library("tidyverse")
+library("gridExtra")
+#library(rEDM)
+library("parallel")
+library("pracma")
+library("purrr")
+library("signal")
+library("ggfortify")
+library("data.table")
+library("patchwork")
+library("codyn")
+library("ggrepel")
+library("lme4")
+library("lmerTest")
+library("MuMIn")
+library("RColorBrewer")
+library("broom")
+library("relaimpo")
+library("lavaanPlot")
+library(ggbeeswarm)
+library(performance)
+library(broom)
+library(kableExtra)
+library(gt)
+library(lavaan)
+#devtools::install_github("canankarakoc/r_package_EDMhelper/EDMhelper")
+```
+
+# Introduction 
+
+Competitive interactions have long been considered a key mechanism driving compensatory dynamics and promoting community temporal stability. Classic ecological theory posits that competition among species can reduce the dominance of any single species, thereby fostering asynchrony in population dynamics. This asynchrony, in turn, dampens fluctuations in total community biomass by ensuring that declines in one species are offset by increases in others. Such compensatory dynamics have been attributed to niche differentiation, resource partitioning, and trade-offs in species’ environmental tolerances, which theoretically stabilize community functioning.
+
+However, there is ongoing debate about the relative importance of competitive interactions versus fundamental species’ responses to environmental variability in driving compensatory dynamics. While competitive interactions are thought to stabilize communities by promoting diversity and reducing synchrony, recent studies suggest that species’ individual responses to environmental conditions may play a more dominant role. For example, variation in species’ performance curves under changing environmental conditions can create compensatory patterns independent of direct interactions among species. This has led to a growing recognition that intrinsic environmental responses may outweigh competitive effects in determining community stability, particularly in systems experiencing strong environmental fluctuations.
+
+In the present study, we investigated the relative contributions of competitive interactions and species’ fundamental environmental responses to compensatory dynamics within experimental protist communities. By manipulating species richness and environmental conditions, we tested whether compensatory dynamics could be attributed primarily to competitive interactions or to the distribution of species’ environmental responses. Our findings suggest that fundamental response diversity, rather than competitive interactions, was the primary driver of community temporal stability. Below, we provide a detailed analysis supporting this conclusion.
+
+
+# Load data sets
+```{r include = FALSE}
+load("Data/complete_ts.RData")
+load("Data/pop_aggr.RData")
+interactions_df <- read_csv("Data/interactions_df.csv")
+
+
+```
+# Get time of extinction 
+
+Coefficients were only considered for time points where species biomass did not drop below 1/10 of initial biomass
+```{r include = FALSE}
+#### Remove coefficients of temperature
+
+interactions_df$day[interactions_df$day==0.00]<-60.28
+
+interactions_df<-dplyr::filter(interactions_df,coefficient_name!="∂C/∂norm_sampleT" & coefficient_name!="∂D/∂norm_sampleT" & coefficient_name!="∂L/∂norm_sampleT" &
+                          coefficient_name!="∂S/∂norm_sampleT" & coefficient_name!="∂P/∂norm_sampleT")
+
+#### Get extinctions of species
+
+
+biom_day_1<-complete_ts%>%dplyr::filter(day==1)%>%group_by(sample_ID,predict_spec)%>%mutate(biomass_day1=biomass)
+
+ext_ts<-complete_ts%>%inner_join(biom_day_1%>%dplyr::select(sample_ID,predict_spec,biomass_day1),by=c("sample_ID","predict_spec"))
+
+
+
+ext_ts <- ext_ts %>%
+  group_by( sample_ID,predict_spec) %>%
+  arrange(day) %>%
+  mutate(
+    # Create a flag for non-zero tot_biomass; species below 1/10 as threshold
+    non_zero_biomass = biomass >=  biomass_day1 / 10,
+    # Find the last non-zero day
+    last_non_zero_day = ifelse(any(non_zero_biomass), max(day[non_zero_biomass], na.rm = TRUE), NA),
+    # Find the first zero day after the last non-zero day
+    ext = ifelse(
+      !is.na(last_non_zero_day),
+      min(day[!non_zero_biomass & day > last_non_zero_day], na.rm = TRUE),
+      NA
+    ),
+    # Flag for days after the first zero day
+    is_after_first_zero_day = ifelse(!is.na(ext), day > ext, FALSE)
+  ) %>%
+  ungroup()
+
+ext_ts<-ext_ts%>%mutate(rep_var=sub("_[^_]+$", "", sample_ID))
+
+
+
+df_first_zero<-ext_ts%>%group_by(sample_ID,predict_spec)%>%summarize(ext=unique(ext))
+
+#### Create interactor variable
+
+interactions_df<-interactions_df%>%group_by(coefficient_name)%>%mutate(predict_spec=strsplit(coefficient_name,split="")[[1]][nchar(coefficient_name)])
+
+interactions_df<-interactions_df%>%inner_join(df_first_zero,by=c("sample_ID","predict_spec"))
+
+
+#### Aggregate interactions,  only using time series before extinction for each interactor
+
+int_aggr<-interactions_df%>%group_by(theta,sample_ID)%>%dplyr::filter(day<=ext)%>%
+  summarize(
+            mean_interaction=mean(coefficient_value,na.rm=T))
+int_aggr$theta[is.na(int_aggr$theta)]="none"
+int_aggr<-int_aggr%>%dplyr::filter(theta%in%c("var","none"))
+
+int_aggr<-int_aggr%>%group_by(theta)%>%full_join(pop_aggr,join_by(sample_ID))%>%ungroup()
+
+
+int_aggr$mean_interaction[is.na(int_aggr$mean_interaction)]=0
+
+
+```
+
+
+# Get average interaction coefficient
+```{r warning=FALSE, results='hide', echo=FALSE}
+
+
+bootstrap_mean <- function(data, n_boot = 1000) {
+  boot_means <- numeric(n_boot)
+  for (i in seq_len(n_boot)) {
+    resample <- sample(data, size = length(data), replace = TRUE)
+    boot_means[i] <- mean(resample)
+  }
+  return(boot_means)
+}
+
+set.seed(42)
+boot_test<-bootstrap_mean(int_aggr$mean_interaction,n_boot=1000)
+
+ci <- quantile(boot_test, probs = c(0.025, 0.975))
+cat("Bootstrap 95% CI:", ci, "\n")
+
+mean(int_aggr$mean_interaction)
+
+```
+
+```{r interactions_stab,  fig.align="center", fig.height=6, fig.width=12, warning=FALSE}
+
+
+
+plot_int_stab<-ggplot(data=int_aggr,aes(x=mean_interaction,y=log10(stability),color=nutrients))+
+  geom_point()+
+  geom_smooth(method="lm",show.legend=F)+
+  theme_classic() +
+   theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        strip.background = element_rect(fill = "grey80", color = NA),  
+    strip.text = element_text(size = 12),legend.position="none") +
+   xlab("mean interaction coefficient") +
+  ylab("Stability")+
+  facet_wrap(~nutrients, labeller = as_labeller(function(x) paste0("nutrients = ", x)))+
+  scale_color_viridis_d(option = "inferno", begin = 0.2, end = 0.8)
+
+
+
+
+plot_int_stab
+```
+
+**Figure 1**: Relationship between mean interaction strength and stability divided by nutrient level.
+
+
+```{r interactions_asynchrony,  fig.align="center", fig.height=6, fig.width=12, warning=FALSE}
+
+
+
+plot_int_strength<-ggplot(data=int_aggr,aes(x=mean_interaction,y=-synchrony_Gross,color=nutrients))+
+  geom_point()+
+  geom_smooth(method="lm",show.legend=F)+
+  theme_classic() +
+   theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        strip.background = element_rect(fill = "grey80", color = NA),  
+    strip.text = element_text(size = 12),legend.position="none") +
+   xlab("mean interaction strength") +
+  ylab("Asynchrony")+
+  facet_wrap(~nutrients, labeller = as_labeller(function(x) paste0("nutrients = ", x)))+
+  scale_color_viridis_d(option = "inferno", begin = 0.2, end = 0.8)
+
+
+
+
+plot_int_strength
+```
+
+**Figure 2**: Relationship between mean interaction strength and asynchrony (Gross) divided by nutrient level.
+
+
+```{r interactions_density,  fig.align="center", fig.height=8, fig.width=30, warning=FALSE}
+# plot distribution of mean_interaction faceted by richness, not by nutrients, and use distribution plot with median value
+
+plot_int_temperature<-ggplot(data=int_aggr,aes(x=mean_interaction))+
+  geom_density(aes(fill=temperature),alpha=0.5)+
+    geom_vline(xintercept = 0,linetype="dashed")+
+  theme_classic() +
+   theme(axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        strip.background = element_rect(fill = "grey80", color = NA),  
+    strip.text = element_text(size = 20),legend.position="none") +
+   xlab("mean interaction coefficient") +
+  ylab("density")+
+  facet_wrap(~temperature, labeller = as_labeller(function(x) paste0("temperature = ", x)))+
+  scale_fill_viridis_d(option = "inferno", begin = 0.2, end = 0.8) + labs(tag = "(a)")
+
+plot_int_nutrients<-ggplot(data=int_aggr,aes(x=mean_interaction))+
+  geom_density(aes(fill=nutrients),alpha=0.5)+
+    geom_vline(xintercept = 0,linetype="dashed")+
+  theme_classic() +
+   theme(axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        strip.background = element_rect(fill = "grey80", color = NA),  
+    strip.text = element_text(size = 20),legend.position="none") +
+   xlab("mean interaction coefficient") +
+  ylab("density")+
+  facet_wrap(~nutrients, labeller = as_labeller(function(x) paste0("nutrients = ", x)))+
+  scale_fill_viridis_d(option = "inferno", begin = 0.2, end = 0.8) + labs(tag = "(b)")
+
+
+plot_int_richness<-ggplot(data=int_aggr,aes(x=mean_interaction))+
+  geom_density(aes(fill=richness),alpha=0.5)+
+  geom_vline(xintercept = 0,linetype="dashed")+
+  theme_classic() +
+   theme(axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        strip.background = element_rect(fill = "grey80", color = NA),  
+    strip.text = element_text(size = 20),legend.position="none") +
+   xlab("mean interaction coefficient") +
+  ylab("density")+
+  facet_wrap(~richness, labeller = as_labeller(function(x) paste0("richness = ", x)))+
+  scale_fill_viridis_d(option = "inferno", begin = 0.2, end = 0.8) + labs(tag = "(c)")
+
+
+plot_int_temperature + plot_int_nutrients+ plot_int_richness 
+
+
+
+```
+
+**Figure 2**: Distribution of mean interaction coefficient faceted by temperature, nutrients, and richness. 
+
+
+# Get residual temperature and nutrients
+```{r echo=FALSE, warning=FALSE, results='hide', warning=FALSE}
+int_aggr2<- int_aggr %>%
+  # Remove the units from the 'nutrients' and 'temperature' columns
+  mutate(
+    nutrients = as.numeric(gsub(" g/L", "", nutrients)),  # Convert nutrients to numeric
+    temperature = gsub(" °C", "", temperature)            # Remove the unit but keep as character
+  ) %>%
+  # Convert temperature ranges to numeric codes using case_when
+  mutate(
+    temperature = case_when(
+      temperature == "18-21" ~ 1,
+      temperature == "22-25" ~ 2,
+      temperature == "25-28" ~ 3,
+      TRUE ~ NA_real_         # Handle unexpected values with NA
+    )
+  )
+
+lm_temp_resid<-lm(data=int_aggr2, temperature ~ log10(balance_f))
+
+lm_nut_resid<-lm(data=int_aggr2, nutrients ~ log10(balance_f))
+ 
+resid_temp<-lm_temp_resid$residuals
+
+resid_nut<-lm_nut_resid$residuals
+ 
+int_aggr2<-int_aggr2%>%mutate(resid_temp=resid_temp,resid_nut=resid_nut)
+ 
+```
+
+# Linear mixed effect model
+
+The same model as in the main text, but with interaction coefficient as an additional explanatory variable. Negative interaction coefficients indicate competition while positive indicate facilitation.
+```{r results='hide', warning=FALSE, echo=FALSE}
+model_int<- lmer(log10(stability) ~ log10(balance_f) +  richness + resid_temp * resid_nut+ mean_interaction+
+                        (1 | composition), data = int_aggr2, REML = FALSE)
+
+```
+
+
+
+**Table 2**: Linear mixed-effects model results for the effects of balance, species interactions, richness, and the residuals of temperature and nutrients on community stability. Estimates are presented with 95% confidence intervals and p-values. 
+```{r  warning=FALSE, echo=FALSE}
+
+
+tbl_summary <- gtsummary::tbl_regression(model_int, intercept = TRUE,
+                                          label = list("(Intercept)" = "Intercept",
+                                                       log_balance = "log10(balance)",
+                                                       nut_scaled = "nutrients (scaled)",
+                                                       temp_scaled = "temperature (scaled)",
+                                                       "nut_scaled*temp_scaled" = "nutrients x temperature (scaled)"),
+                                          add_estimate_to_reference_row = TRUE,  # Adds reference values for categorical predictors
+                                          add_pairwise_contrasts = TRUE,
+                                          add_significance_stars = TRUE) %>%
+  gtsummary::modify_table_body(
+    ~ .x %>%
+      dplyr::mutate(
+        t_value = ifelse(!is.na(estimate), round(statistic, 2), NA),  # Use 'statistic' for t-value
+        # Remove std_error, as it is no longer needed
+        std_error = NULL
+      )
+  ) %>%
+  # Reorder columns: estimate, 95% CI, t-value, p-value
+  gtsummary::modify_header(label = "**Predictor**", 
+                           estimate = "**Estimate**", 
+                           conf.int = "**95% CI**", 
+                           t_value = "**t-value**", 
+                           p.value = "**p-value**") %>%
+  gtsummary::modify_footnote(everything() ~ NA) %>%  # Remove default footnotes for clean look
+  gtsummary::bold_labels() %>%
+  gtsummary::as_gt() %>%
+  tab_header(title = "Linear Regression Results") %>%
+  # Ensure p-value is the last column
+  gt::cols_move(p.value, after = last_col()) %>%
+  # Bold significant p-values
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(
+      columns = vars(p.value),
+      rows = p.value < 0.05
+    )
+  )
+
+
+tbl_summary
+```
+
+
+Mean interaction coefficient is not significant (est. = 0.03, p=0.2). No effect of interaction strength on stability was found.
+
+
+
+
+<!-- ```{r} -->
+<!-- sem_aggr <- int_aggr2 %>% -->
+<!--   ungroup() %>%  # Ensure there is no grouping -->
+<!--   mutate( -->
+<!--     log_balance_f = log10(balance_f), -->
+<!--     stability = log10(1 / CV), -->
+<!--     richness = as.numeric(richness), -->
+<!--     temperature=temperature, -->
+<!--     asynchrony_Gross= (-synchrony_Gross), -->
+<!--     pop_stability= log10(1/w_pop_CV), -->
+<!--     pop_var = log10(pop_V) -->
+<!--     #Keep it as an ordered factor -->
+<!--   ) -->
+
+<!-- model1 <- ' -->
+<!--   stability ~ asynchrony_Gross -->
+<!--   +pop_stability  -->
+
+<!--   asynchrony_Gross ~ log_balance_f + nutrients +mean_interaction -->
+<!--   pop_stability~log_balance_f + nutrients +mean_interaction -->
+
+
+
+<!-- ' -->
+
+
+
+
+<!-- # Fit the model -->
+
+<!-- fit1 <- sem(model1,estimator="MLM",meanstructure = TRUE,data = sem_aggr%>%dplyr::filter(!is.na(asynchrony_Gross))) -->
+<!-- #modificationindices(fit1C) -->
+
+<!-- # Summarize the results -->
+<!-- summary(fit1, standardized = TRUE,rsquare=T, fit.measures = TRUE) -->
+<!-- ``` -->
+
+
+
+
