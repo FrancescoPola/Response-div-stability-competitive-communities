@@ -1,0 +1,1148 @@
+---
+title: "Supplementary materials for: The Imbalance of nature: Critical Role of Species Environmental Responses for Stability"
+author: "Francesco Polazzo, Til Hämmig, Owen L. Petchey, Frank Pennekamp"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    code_folding: hide
+    keep_md: yes
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r include = FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      include = TRUE,
+                      warning = FALSE,
+                      message = FALSE,
+                      cache = FALSE)
+```
+
+```{r results='hide'}
+rm(list = ls())
+library(plotly)
+library(tidyverse)
+library(here)
+library(patchwork)
+library(DT)
+library(mgcv)
+library(gratia)
+library(rlang)
+library(vctrs)
+library(scales)
+library(broom)
+library(reshape2)
+library(ggtext)
+library(ggsci)
+library(ggpubr)
+library(ggrepel)
+source.files <- list.files(here("r"), full.names = TRUE)
+sapply(source.files, source, .GlobalEnv)
+
+theme_set(theme_classic())
+```
+# Intention 
+
+The goal of this document is to calculate the growth rate (r) and the carrying capacity (K) of 6 species of ciliates 
+that we grew individually in a replicated (n = 3) factorial experiment with 5 temperatures (18, 21, 24, 26, and 28), 5 nutrients levels and their combinations (= 25 treatments) for 3 weeks. 
+The calculated r and K are then going to be used as the traits to calculate the response diversity of communities composed of 2, 3, and 4 species to all possible changes in temperature and nutrients. The calculated response diversity will inform us on which communities will be used in the following experimental step.
+We are going to calculate the growth rate as the slope of the regression of ln(Nt) where: ln is natural log and Nt is the population density at time t, during the period of exponential growth. 
+We are going to set initially the period of exponential growth as the first 6 days, but we are going to visually check whether this choice is correct. 
+K will be calculated as the highest population biomass for each population during the experiment.
+
+
+Let's start loading the data set and creating a subset for calculating r
+The data set loaded here is a reanalysis of monoculture data, where different bemovi settings have been used to stay consistent between poly and monoculture
+```{r results='hide', echo=FALSE, warning=FALSE}
+#dd <- read.csv(here("Data/data_reaction_norms.csv"))
+
+
+load("~/Documents/GitHub/Multifarious-Response-diversity---experiments/Analysis/dens_biomass_mono.RData")
+names(dens)
+names(dens)[names(dens)=="mean.dens.ml"]<-"density"
+
+# create day variable
+
+# Convert strings to datetime objects
+# Note that for the groups tcl, ds, and p, different dates exist.
+# the following code is creating a day. variable and therefore treats these three groups differently
+date_format = "%Y-%m-%d"
+
+dens<-dens%>%mutate(date=as.Date(date))
+
+tcl<-dplyr::filter(dens,species_initial%in%c("T","C","L"))
+tcl<-mutate(tcl,sample_group="tcl")
+earliest_date <- min(tcl$date)
+days_since_earliest <- as.numeric(tcl$date - earliest_date) + 1
+tcl<-tcl%>%mutate(day=days_since_earliest)
+
+ds<-dplyr::filter(dens,species_initial%in%c("D","S"))
+ds<-mutate(ds,sample_group="ds")
+earliest_date <- min(ds$date)
+days_since_earliest <- as.numeric(ds$date - earliest_date) + 1
+ds<-ds%>%mutate(day=days_since_earliest)
+
+p<-dplyr::filter(dens,species_initial%in%c("P"))
+p<-mutate(p,sample_group="p")
+earliest_date <- min(p$date)
+days_since_earliest <- as.numeric(p$date - earliest_date) + 1
+p<-p%>%mutate(day=days_since_earliest)
+
+dens<-rbind(tcl,ds,p)
+
+# create a variable called species from only the species initials
+L<-dplyr::filter(dens,species_initial=="L")
+L<-L%>%mutate(species="Loxocephalus")
+
+D<-dplyr::filter(dens,species_initial=="D")
+D<-D%>%mutate(species="Dexiostoma")
+
+S<-dplyr::filter(dens,species_initial=="S")
+S<-S%>%mutate(species="Spirostomum")
+
+C<-dplyr::filter(dens,species_initial=="C")
+C<-C%>%mutate(species="Colpidium")
+
+P<-dplyr::filter(dens,species_initial=="P")
+P<-P%>%mutate(species="Paramecium")
+
+Te<-dplyr::filter(dens,species_initial=="T")
+Te<-Te%>%mutate(species="Tetrahymena")
+
+dens<-rbind(P,Te,C,D,S,L)
+
+#dd1 <- dens %>% select("species_initial", "temperature", "nutrients", "sample_ID", "density", "day","species")
+# create a data frame with only the days of exponential growth (first 6 days)
+dd_d6 <- dens %>% dplyr::filter(day <= 7) 
+
+
+
+```
+
+```{r results='hide', echo=FALSE, warning=FALSE}
+# 
+# # First, let's create day_0_data with the appropriate density values for day = 0
+# # Load required packages
+# library(dplyr)
+# 
+# # Assuming your original data frame is named dd1
+# # Create a data frame for day == 0 with the same structure as dd1
+# day_0_data <- data.frame(
+#   species = rep(unique(dd1$species), each = nrow(dd1)),  # Replicate for all species
+#   temperature = NA,  # Initialize with NA
+#   nutrients = NA,    # Initialize with NA
+#   sample_ID = NA,    # Initialize with NA
+#   density = ifelse(dd1$species %in% c("Colpidium", "Dexiostoma", "Loxocephalus"), 100, 25),  # Set density values as specified
+#   day = rep(0, nrow(dd1) * length(unique(dd1$species)))  # Set day = 0 for all rows
+# )
+# 
+# day_1_values <- subset(dd1, day == 1)[1, c("temperature", "nutrients", "sample_ID")]
+# 
+# # Create a new data frame for day == 0 with the same structure as dd1
+# day_0_data <- data.frame(
+#   species = rep(unique(dd1$species), each = nrow(dd1)),  # Replicate for all species
+#   temperature = rep(day_1_values$temperature, nrow(dd1) * length(unique(dd1$species))),
+#   nutrients = rep(day_1_values$nutrients, nrow(dd1) * length(unique(dd1$species))),
+#   sample_ID = rep(day_1_values$sample_ID, nrow(dd1) * length(unique(dd1$species))),
+#   density = ifelse(dd1$species %in% c("Colpidium", "Dexiostoma", "Loxocephalus"), 100, 25),  # Set density values as specified
+#   day = rep(0, nrow(dd1) * length(unique(dd1$species)))
+# )
+# 
+# # Combine day_0_data with dd1
+# combined_data <- rbind(dd1, day_0_data)
+# 
+
+```
+
+
+
+```{r time_series_spp, fig.align="center", fig.height=20, fig.width=30}
+
+# plot sp densities over time
+ggplot(dens, aes(x = day, y = log(density), color = as.factor(nutrients))) +
+  geom_point(size = 2) +
+  geom_smooth(method = "loess", se = FALSE, linewidth = 2) +
+  scale_color_viridis_d(option = "magma") +
+  facet_grid(species ~ temperature) +
+  theme_bw() +
+  scale_x_continuous(breaks = seq(min(dens$day), max(dens$day), by = 1)) +
+  theme(
+    # Increase facet text size
+    strip.text = element_text(size = 30),
+    # Rotate and increase axis text size
+    axis.text.x = element_text(size = 20, angle = 90, vjust = 0.5, hjust = 1),
+    axis.text.y = element_text(size = 20),
+    # Increase axis title size
+    axis.title.x = element_text(size = 30),
+    axis.title.y = element_text(size = 30),
+    # Increase legend text and title size
+    legend.text = element_text(size = 20),
+    legend.title = element_text(size = 30),
+    # Increase legend key size
+    legend.key.size = unit(2, "lines"),
+    # Move legend to top and make it horizontal
+    legend.position = "top",
+    legend.direction = "horizontal"
+  ) +
+  labs(color = "Nutrient level")
+
+
+# Spirostomum took longer than the other species to start growing. Try to calculate r over the whole experimental time
+```
+**Figure 1**:Time series of species densities across the treatments.
+
+Calculate K and r. For some species in some environmental conditions, different lengths of the time series have been used to calculate intrinsic rate of growth
+```{r results='hide', echo=FALSE, warning=FALSE}
+# Group the data by species, nutrient level, temperature, and sample ID
+grouped_data <- dens %>%
+  group_by(species, nutrients, temperature, sample_ID) 
+
+### Calculate carrying capacity (K) as the highest population density for each species and treatment 
+
+carrying_capacity_df <- grouped_data %>%
+  summarise(
+    CarryingCapacity = max(density),
+    .groups = 'drop'
+  )
+
+
+### Calculate growth rate as the slope of the linear regression of density ~ time for each species and treatment combination
+
+grouped_data_d6 <- dd_d6 %>%
+  group_by(species, nutrients, temperature, sample_ID) %>% 
+  dplyr::filter(species != "Spirostomum")
+
+grouped_data_d6 <- grouped_data_d6 %>% dplyr::filter(!(species %in% c("Colpidium", "Loxocephalus") & temperature == 28))
+
+growth_rates_df <- grouped_data_d6 %>%
+  summarise(
+    Intercept = coef(lm(log(density + 0.001) ~ day))[1],
+    GrowthRate = coef(lm(log(density + 0.001) ~ day))[2],
+    RSquared = summary(lm(log(density + 0.001) ~ day))$r.squared,
+    .groups = 'drop'
+  )
+
+
+spiro_r_df <- dens %>% dplyr::filter(species == "Spirostomum") %>% 
+  group_by(species, nutrients, temperature, sample_ID) 
+  
+  spiro_r <-  spiro_r_df %>%
+  summarise(
+    Intercept = coef(lm(log(density + 0.001) ~ day))[1],
+    GrowthRate = coef(lm(log(density + 0.001) ~ day))[2],
+    RSquared = summary(lm(log(density + 0.001) ~ day))$r.squared,
+    .groups = 'drop'
+  )
+  
+
+
+colp_28 <- dens %>% dplyr::filter((species %in% "Colpidium" & temperature == 28)) %>% 
+  dplyr::filter(day <= 3) %>% 
+  group_by(species, nutrients, temperature, sample_ID) 
+  
+colp_28_r <- colp_28 %>% summarise(
+    Intercept = coef(lm(log(density + 0.001) ~ day))[1],
+    GrowthRate = coef(lm(log(density + 0.001) ~ day))[2],
+    RSquared = summary(lm(log(density + 0.001) ~ day))$r.squared,
+    .groups = 'drop'
+  )
+
+
+loxo_28 <- dens %>% dplyr::filter((species %in% "Loxocephalus" & temperature == 28)) %>% 
+  dplyr::filter(day <= 3) %>% 
+  group_by(species, nutrients, temperature, sample_ID) 
+  
+loxo_28_r <- loxo_28 %>% summarise(
+    Intercept = coef(lm(log(density + 0.001) ~ day))[1],
+    GrowthRate = coef(lm(log(density + 0.001) ~ day))[2],
+    RSquared = summary(lm(log(density + 0.001) ~ day))$r.squared,
+    .groups = 'drop'
+  )
+    
+growth_rates_df <- rbind(growth_rates_df, spiro_r, loxo_28_r, colp_28_r)
+
+# Display the resulting carrying capacity and growth rate data frames
+dd_r_K <- merge(growth_rates_df, carrying_capacity_df, by = c("species", "nutrients", "temperature", "sample_ID"))
+
+# change place holder nutrient levels to actual numerical values
+
+dd_r_K_1<-mutate(dplyr::filter(dd_r_K,nutrients==1),nutrients=0.01)
+dd_r_K_2<-mutate(dplyr::filter(dd_r_K,nutrients==2),nutrients=0.75)
+dd_r_K_3<-mutate(dplyr::filter(dd_r_K,nutrients==3),nutrients=1.25)
+dd_r_K_4<-mutate(dplyr::filter(dd_r_K,nutrients==4),nutrients=2.5)
+dd_r_K_5<-mutate(dplyr::filter(dd_r_K,nutrients==5),nutrients=3)
+
+dd_r_K_new<-rbind(dd_r_K_1,dd_r_K_2,dd_r_K_3,dd_r_K_4,dd_r_K_5)
+dd_r_K<-dd_r_K_new
+
+```
+
+
+Visual inspection of exponential growth phase 
+```{r results='hide', echo=FALSE, warning=FALSE}
+# List to store ggplot objects
+ggplot_objects <- list()
+# Loop through each species
+for (species_name in unique(dens$species)) {
+  
+  # dplyr::filter data for the current species
+  subset_data <- dens %>%
+    dplyr::filter(species == species_name)
+  
+  # Create ggplot object
+  ggplot_object <- ggplot(subset_data, aes(x = day, y = log(density + 0.001), color = as.factor(nutrients))) +
+    geom_point(data = subset_data, aes(x = day, y = log(density + 0.001), color = as.factor(nutrients))) +
+    geom_smooth(data = subset_data, method = "loess", se = FALSE) +
+    geom_smooth(data = subset_data %>% dplyr::filter(day <= 7), method = "lm", se = FALSE, aes(group = nutrients, color = factor(nutrients)), linewidth = 1.5) +  # Add LM line
+    scale_color_viridis_d(option = "magma") +
+    facet_wrap(~temperature, scales = "free") +
+    theme_bw() +
+    scale_x_continuous(breaks = seq(min(dens$day), max(dens$day), by = 1)) +
+    ggtitle(paste("Species:", species_name))
+  
+  # Save the ggplot object in the list§
+  ggplot_objects[[species_name]] <- ggplot_object
+}
+
+# Access a specific plot, for example, Dexiostoma
+dexiostoma_plot <- ggplot_objects[["Dexiostoma"]]
+colpidium_plot <- ggplot_objects[["Colpidium"]]
+loxocephalus_plot <- ggplot_objects[["Loxocephalus"]]
+paramecium_plot <- ggplot_objects[["Paramecium"]]
+#spirostomum_plot <- ggplot_objects[["Spirostomum"]]
+tetrahymena_plot <- ggplot_objects[["Tetrahymena"]]
+# Display the plot
+# dexiostoma_plot # probably we can go to day 6 for Dexio
+# colpidium_plot
+# loxocephalus_plot
+# paramecium_plot
+# spirostomum_plot
+# tetrahymena_plot
+
+# Create ggplot object
+
+plot_regression_day <- ggplot(dens, aes(x = day, y = log(density), color = as.factor(nutrients))) +
+  geom_point() +
+  geom_smooth(method = "loess", se = FALSE) +
+  geom_smooth(data = dens %>% dplyr::filter(day <= 7, species != "Spirostomum"), method = "lm", se = FALSE, aes(group = nutrients, color = factor(nutrients)), linewidth = 1.5) +  # LM line for days <= 5
+  geom_smooth(data = dens %>% dplyr::filter(species == "Spirostomum"), method = "lm", se = FALSE, aes(group = nutrients, color = factor(nutrients)), linewidth = 1.5) +  # LM line for Spirostomum across all days
+  scale_color_viridis_d(option = "magma") +
+  facet_grid(temperature~ species, scales = "free") +
+  theme_bw() +
+  scale_x_continuous(breaks = seq(min(dens$day), max(dens$day), by = 1)) +
+   theme(
+    # Increase facet text size
+    strip.text = element_text(size = 30),
+    # Increase axis text size
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    # Increase axis title size
+    axis.title.x = element_text(size = 30),
+    axis.title.y = element_text(size = 30),
+     # Increase legend text and title size
+    legend.text = element_text(size = 20),
+    legend.title = element_text(size = 30),
+    # Increase legend key size
+    legend.key.size = unit(2, "lines")  # Adjust the size as needed
+  )
+  
+
+```
+
+
+```{r, warning=FALSE, reg_all, fig.cap='Species densities across the treatments with the regression lines used to calculate the intrinsic rate of growth (r).', fig.align="center", fig.height=30, fig.width=40}
+
+
+plot_regression_day
+```
+
+## GAMs to fit response surface 
+
+We focus on the intrinsic rate of growth (r). This is because the intrinsic rate of growth has been shown to be a better predictor of community temporal stability than carrying capacity (K) (Ross et al 2023) [https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/2041-210X.14087]. 
+We are going to fit response surfaces using the calculated r for all species using GAMs.  The rationale is that r is likely of more relevance if the environmental change of interest occurs rapidly, since r provides information on a population's ability to rapidly bounce back after disturbance. In the upcoming experiment, we will have temperature fluctuating relatively fast, and so we decide now to focus on r. 
+
+Use GAMs to fit response surface of r and K 
+```{r results='hide', echo=FALSE, warning=FALSE}
+# Fit GAMS to calculated growth rate to estimate response surface
+
+new_data <- expand_grid(temperature = seq(18, 28, by= 0.02),
+                        nutrients = seq(0.01, 3, by= 0.01))
+
+
+nested_gams <- dd_r_K %>% 
+  nest(cols =-species) %>% 
+  mutate(
+    gams = map(cols, ~ gam(GrowthRate ~ te(temperature, nutrients, k = c(5, 5)),
+                           data = .x,
+                           method = "REML")),
+    predicted = map(gams, ~ predict(.x, newdata = new_data))
+  )
+
+# Get gams coefficients
+coeff <- nested_gams %>% 
+  mutate(coefs = map(gams, tidy, conf.int = TRUE)) %>% 
+  unnest(coefs) %>% 
+  dplyr::select(c('species', 'term', 'p.value'))
+
+
+
+# Get gams glance
+# nested_gams %>% 
+#   mutate(results = map(gams, glance), 
+#          R.square = map_dbl(gams, ~ summary(.)$r.sq))  %>% 
+#   unnest(results) 
+
+
+# Creating the dataset with the 2 columns as described above
+predicted <- nested_gams %>% unnest(predicted)
+rates <- cbind(new_data, predicted[, c(1,4)])
+rates <- rates %>%
+  relocate(species, temperature, nutrients, predicted)
+
+
+```
+
+
+
+Create surface plots
+```{r results='hide', echo=FALSE, warning=FALSE}
+
+# Create a list to store ggplot objects
+surface_plots <- list()
+
+# Loop through each species and draw GAM surface
+for (i in seq_along(nested_gams$gams)) {
+  species_name <- nested_gams$species[i]
+  gam_model <- nested_gams$gams[[i]]
+  
+  # Create a new plot for each species
+  plot <- ggplot(rates %>% dplyr::filter(species == species_name),
+                 aes(x = temperature, y = nutrients, z = predicted)) +
+    geom_tile(aes(fill = predicted), color = "white") +
+    geom_contour(color = "black", linetype = "solid", breaks = seq(-1, 1, by = 0.1), n = 10) +  
+    scale_fill_viridis_c(option="magma") +
+    labs(title = paste("GAM Surface for", species_name),
+         fill = "Predicted Growth Rate") +
+    theme_bw() +
+    scale_x_continuous(breaks = c(18, 21, 24, 26, 28))
+  
+  # Save the plot in the list
+  surface_plots[[species_name]] <- plot
+  
+}
+
+```
+
+
+We now check how the GAMs surfaces (r) look compared to the measured densities.
+```{r }
+# Access a specific plot, for example, Dexiostoma
+surface_dexiostoma <- surface_plots[["Dexiostoma"]]
+surface_colpidium <- surface_plots[["Colpidium"]]
+surface_loxocephalus <- surface_plots[["Loxocephalus"]]
+surface_paramecium <- surface_plots[["Paramecium"]]
+surface_spirostotum <- surface_plots[["Spirostomum"]]
+surface_tetrahymena <- surface_plots[["Tetrahymena"]]
+
+# Checking predictions
+# dexiostoma_plot + surface_dexiostoma
+# colpidium_plot + surface_colpidium
+# loxocephalus_plot + surface_loxocephalus
+# paramecium_plot + surface_paramecium ### Paramecium seems to take longer to get to stable phase. Maybe do regression day 8
+# spirostomum_plot + surface_spirostotum ### Remove day 11 nutrients 2 temperature 28 
+# tetrahymena_plot + surface_tetrahymena
+
+```
+Checking predictions
+```{r surface_Dexi, fig.cap='Measured density values of Dexiostoma in the different treatments (a) vs fitted surface of growth rate (b).', fig.align="center", fig.height=8, fig.width=18}
+dexiostoma_plot <- dd_r_K %>% dplyr::filter(species == "Dexiostoma") %>% 
+  ggplot(aes(x = nutrients, y = GrowthRate, color = as.factor(nutrients))) +
+  geom_point(size = 3.5, position = position_jitterdodge(jitter.width = 0.5, dodge.width = 0.4)) + 
+  facet_grid(~temperature) +
+  theme_bw() +
+  theme(
+    # Increase facet text size
+    strip.text = element_text(size = 20),
+    # Increase axis text size
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    # Increase axis title size
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+  ) +
+  scale_color_viridis_d(option = "magma") +
+  labs(tag = "(a)")
+  
+surface_dexiostoma <- surface_dexiostoma + labs(tag = "(b)")
+dexiostoma_plot + surface_dexiostoma
+```
+
+
+```{r surface_colp, fig.cap='Measured density values of Colpidium in the different treatments (a) vs fitted surface of growth rate (b).', fig.align="center", fig.height=8, fig.width=18}
+colpidium_plot <- dd_r_K %>% dplyr::filter(species == "Colpidium") %>% 
+  ggplot(aes(x = nutrients, y = GrowthRate, color = as.factor(nutrients))) +
+  geom_point(size = 3.5, position = position_jitterdodge(jitter.width = 0.5, dodge.width = 0.4)) + 
+  facet_grid(~temperature) +
+  theme_bw() +
+  theme(
+    # Increase facet text size
+    strip.text = element_text(size = 20),
+    # Increase axis text size
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    # Increase axis title size
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+  ) +
+  scale_color_viridis_d(option = "magma") +
+  labs(tag = "(a)")
+surface_colpidium <- surface_colpidium + labs(tag = "(b)")
+colpidium_plot + surface_colpidium
+```
+
+
+
+```{r surface_loxo, fig.cap='Measured density values of Loxocephalus in the different treatments (a) vs fitted surface of growth rate (b).', fig.align="center", fig.height=8, fig.width=18}
+loxocephalus_plot <- dd_r_K %>% dplyr::filter(species == "Loxocephalus") %>% 
+  ggplot(aes(x = nutrients, y = GrowthRate, color = as.factor(nutrients))) +
+  geom_point(size = 3.5, position = position_jitterdodge(jitter.width = 0.5, dodge.width = 0.4)) + 
+  facet_grid(~temperature) +
+  theme_bw() +
+  theme(
+    # Increase facet text size
+    strip.text = element_text(size = 20),
+    # Increase axis text size
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    # Increase axis title size
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+  ) +
+  scale_color_viridis_d(option = "magma") +
+  labs(tag = "(a)")
+
+surface_loxocephalus <- surface_loxocephalus + labs(tag = "(b)")
+loxocephalus_plot + surface_loxocephalus
+```
+
+
+```{r surface_paramecium, fig.cap='Measured density values of Paramecium in the different treatments (a) vs fitted surface of growth rate (b).', fig.align="center", fig.height=8, fig.width=18}
+paramecium_plot <- dd_r_K %>% dplyr::filter(species == "Paramecium") %>% 
+  ggplot(aes(x = nutrients, y = GrowthRate, color = as.factor(nutrients))) +
+  geom_point(size = 3.5, position = position_jitterdodge(jitter.width = 0.5, dodge.width = 0.4)) + 
+  facet_grid(~temperature) +
+  theme_bw() +
+  theme(
+    # Increase facet text size
+    strip.text = element_text(size = 20),
+    # Increase axis text size
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    # Increase axis title size
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+  ) +
+  scale_color_viridis_d(option = "magma") +
+  labs(tag = "(a)")
+surface_paramecium <- surface_paramecium + labs(tag = "(b)")
+paramecium_plot + surface_paramecium
+```
+
+```{r surface_spiro, fig.cap='Measured density values of Spirostotum in the different treatments (a) vs fitted surface of growth rate (b).', fig.align="center", fig.height=8, fig.width=18}
+surface_spirostotum <- surface_spirostotum + labs(tag = "(b)") 
+spirostomum_plot <- dd_r_K %>% dplyr::filter(species == "Spirostomum") %>% 
+  ggplot(aes(x = nutrients, y = GrowthRate, color = as.factor(nutrients))) +
+  geom_point(size = 3.5, position = position_jitterdodge(jitter.width = 0.5, dodge.width = 0.4)) + 
+  facet_grid(~temperature) +
+  theme_bw() +
+  theme(
+    # Increase facet text size
+    strip.text = element_text(size = 20),
+    # Increase axis text size
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    # Increase axis title size
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+  ) +
+  scale_color_viridis_d(option = "magma") +
+  labs(tag = "(a)")
+spirostomum_plot + surface_spirostotum
+```
+
+
+```{r surface_tetra, fig.cap='Measured density values of Tetrahymena in the different treatments (a) vs fitted surface of growth rate (b).', fig.align="center", fig.height=8, fig.width=18}
+tetrahymena_plot <- dd_r_K %>% dplyr::filter(species == "Tetrahymena") %>% 
+  ggplot(aes(x = nutrients, y = GrowthRate, color = as.factor(nutrients))) +
+  geom_point(size = 3.5, position = position_jitterdodge(jitter.width = 0.5, dodge.width = 0.4)) + 
+  facet_grid(~temperature) +
+  theme_bw() +
+  theme(
+    # Increase facet text size
+    strip.text = element_text(size = 20),
+    # Increase axis text size
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    # Increase axis title size
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+  ) +
+  scale_color_viridis_d(option = "magma") +
+  labs(tag = "(a)")
+surface_tetrahymena <- surface_tetrahymena + labs(tag = "(b)")
+tetrahymena_plot + surface_tetrahymena
+```
+
+
+
+# Response diversity with known direction of environmental change
+
+Now we calculate RD with known trajectory of environmental change, i.e. the one we are going to apply in the experiment. 
+
+- Create a data set with environmental conditions that we may use in the experiment and calculate RD knowing the trajecotry of the environmental change.
+
+- fluctuating temperature x 3 fixed nutrients = 9 treatments
+
+## Temperature fluctuations
+
+For the experiment we used three different temperature regimes, all with same magnitude but different mean temperatures: 18-21, 22-25, 25-28. Temperature stayed at lower end of the range for three days, and then transitioned over 24 h to the higher end, where it stayed for another three days before transitioning back. The experiment lasted for 60 days.
+
+```{r experiment, fig.cap='Visual representation of the experimental design.', fig.align="center", fig.height=16, fig.width=25}
+
+
+# Define the number of days in the experiment
+total_days <- 60
+
+# Define temperature regimes
+regimes <- list(
+  "Regime 1" = c(18, 21),
+  "Regime 2" = c(22, 25),
+  "Regime 3" = c(25, 28)
+)
+
+# Define nutrient concentrations
+nutrient_levels <- c(0.01, 0.35, 0.75) # g/L
+
+# Function to create a 7-day cycle for a given temperature range
+create_cycle <- function(min_temp, max_temp, days) {
+  cycle <- c(rep(min_temp, 3), 
+             seq(min_temp, max_temp, length.out = 4)[-c(1, 4)], # Transition
+             rep(max_temp, 3))
+  rep(cycle, length.out = days)
+}
+
+# Generate data frame for each regime and nutrient level
+temperature_data <- bind_rows(
+  lapply(names(regimes), function(regime) {
+    lapply(nutrient_levels, function(nutrient) {
+      data.frame(
+        Day = 1:total_days,
+        Temperature = create_cycle(regimes[[regime]][1], regimes[[regime]][2], total_days),
+        Regime = regime,
+        Nutrient = nutrient
+      )
+    }) %>% bind_rows()
+  })
+)
+
+# Plot the temperature regimes, faceted by nutrient concentration
+ggplot(temperature_data, aes(x = Day, y = Temperature, color = Regime)) +
+  geom_line(size = 1) +
+  labs(
+    title = "Experimental design",
+    x = "Day",
+    y = "Temperature (°C)"
+  ) +
+  scale_color_manual(values = c("blue", "green", "red")) +
+  facet_wrap(~ Nutrient, labeller = labeller(Nutrient = function(x) paste(x, "g/L"))) +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+
+## Get the slopes (change in species performance from Temperature 1 to Temperature 2 and vice versa)
+
+```{r}
+
+# takes a slice of GAM surfaces where nutrients stays constant.
+
+
+new_nested_gams<-nested_gams%>%dplyr::filter(species!="Tetrahymena")
+
+pred_slice<-function(nutrient_level){
+  
+  new_data <- expand_grid(temperature = seq(18, 28, by= 0.02),
+                        nutrients = rep(nutrient_level))
+  num_rows <- nrow(new_data)
+
+pred_slice <- data.frame(matrix(nrow = num_rows, ncol = 0))
+
+for (j in 1:length(new_nested_gams$species)) {
+  predictions <- unlist(map(nested_gams$gams[j], ~ predict(.x, newdata = new_data)))
+  pred_slice <- bind_rows(pred_slice, data.frame(prediction = predictions, species = new_nested_gams$species[j]))
+}
+
+pred_slice <- na.omit(pred_slice)
+
+pred_slice<-cbind(pred_slice,new_data)
+
+return(pred_slice)}
+
+
+
+
+T_scenarios<-list(c(18,21),c(22,25),c(25,28))
+
+### Creates a data frame where for each temperature regime, at both lower and upper temperature, for each species  performance is predicted. Then, these two values are used to calculate the change in performance (slopes) 
+
+df_slopes <- lapply(T_scenarios,function(T){
+  nutrients<-c(0.01,0.35,0.75)
+  slopes<-lapply(nutrients,function(N){
+    df<-pred_slice(N)
+    df_filtered<-df%>%dplyr::filter(temperature%in%T)
+    df_filtered<-df_filtered%>%group_by(nutrients)%>%reframe(
+      maxT_y=dplyr::filter(df_filtered,temperature==max(temperature))$prediction,
+      minT_y=dplyr::filter(df_filtered,temperature==min(temperature))$prediction,
+      temperature=paste0(min(temperature),"-",max(temperature)),
+      species=unique(species))
+      
+    return(df_filtered)
+  
+    })
+  slopes<-do.call("rbind",slopes)
+  slopes  <-slopes%>%mutate(species_initial=sapply(strsplit(species,""),"[",1))
+  
+  ### delta in performance divided by the delta temperature
+  
+  slopes<-slopes%>%mutate(slope=(maxT_y-minT_y)/3)
+  return(slopes)
+  
+})
+
+df_slopes<-do.call("rbind",df_slopes)
+df_slopes<-df_slopes%>%mutate(nutrients=paste0(nutrients," g/L"),
+                              temperature=paste0(temperature," °C"))
+
+ write.csv(df_slopes,"Data/df_slopes_cor.csv",quote=F,row.names = F)
+ 
+```
+
+
+```{r}
+dist_slopes <- ggplot(data = df_slopes, aes(x = slope, y = rep(1, 45), color = species)) +
+  geom_point(size = 5, alpha = 0.7) +  # translucent points
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  theme_bw() +
+  facet_grid(nutrients ~ temperature, scales = "free_x") +  # allow x-axis to vary by column
+  scale_color_discrete(name = "species") +  
+  theme(
+    strip.text = element_text(size = 12),
+    strip.background = element_rect(fill = "grey80", color = NA),  
+    axis.title.x = element_text(size = 16),
+    aspect.ratio = 0.5,
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+dist_slopes
+```
+
+
+## Calculate divergence for all possible compositions
+
+
+```{r communities_all, fig.cap='Community compositions that were used in the experiment to create, for each richness level, a gradient of response diversity. Letter represent different species: C = Colpidium, S = Spirostomum, D = Dexiostoma, P = Paramecium, L = Loxocephalus', fig.align="center", fig.height=16, fig.width=25}
+
+characters <- c("C", "D", "L", "S", "P")
+
+richness_2<-combn(characters, 2, FUN = function(x) paste0(x, collapse = ""))
+richness_3<-combn(characters, 3, FUN = function(x) paste0(x, collapse = ""))
+richness_4<-combn(characters, 4, FUN = function(x) paste0(x, collapse = ""))
+composition<-c(richness_2,richness_3,richness_4)
+
+compositions_df<-as.data.frame(expand.grid(composition=composition,nutrients=c("0.01 g/L","0.35 g/L","0.75 g/L"),temperature=c("18-21 °C","22-25 °C","25-28 °C")))
+
+compositions_df<-compositions_df%>%mutate(richness=nchar(as.character(composition)))
+
+
+all_div<-apply(compositions_df,1,function(r){
+  slopes<-dplyr::filter(df_slopes,nutrients==r[2],
+                 temperature==r[3],
+  species_initial%in%strsplit(r[1],"")[[1]])
+
+  
+  divergence<-data.frame(divergence=(max(slopes$slope)-min(slopes$slope)-abs(abs(max(slopes$slope))-abs(min(slopes$slope))))/(max(slopes$slope)-min(slopes$slope)),
+                                composition=r[1],
+                         temperature=r[3],nutrients=r[2])
+})
+
+all_div<-as.data.frame(do.call("rbind", all_div))
+all_div<-full_join(all_div,compositions_df,join_by(nutrients,temperature,composition))
+
+
+plot_all_div <- ggplot(data = all_div, aes(x = richness, y = divergence, label = composition)) +
+  geom_point(size = 3) +  # Adjust point size directly instead of using aes()
+  geom_text_repel(size = 6, max.overlaps = 100) +  # Increase text size in geom_text_repel
+  facet_grid(temperature~ nutrients) +
+  theme_bw(base_size = 20) +  # Increase the base text size for theme elements
+  theme(
+    plot.title = element_text(size = 30, face = "bold"),       # Title size
+    axis.title = element_text(size = 25),                      # Axis titles
+    axis.text = element_text(size = 22),                       # Axis text
+    strip.text = element_text(size = 22),                      # Facet label text
+    legend.title = element_text(size = 22),                    # Legend title
+    legend.text = element_text(size = 22)                      # Legend text
+  )
+
+
+
+plot_all_div
+```
+
+
+## Calculate diveregence
+
+Communities employed in each environmental treatment were selected prior to the community experiment based on mono culture response experiments. While analyzing Community data using the BEMOVI R package, settings had to be changed (threshold and minimal particle size) to reduce processing time to a manageable level. To stay consistent between mono culture and community experiment (and to ensure correct species identification), we reanalyzed mono culture data. This resulted in slightly different response surfaces, causing some values of divergence to change. Therefore, the gradient of divergence has changed for some environmental treatments. 
+In the plot below you can see the compositions used in the experiment and their response diversity for each enviromental treatment and richness level.
+
+```{r communities, fig.cap='Community compositions that were used in the experiment to create, for each richness level, a gradient of response diversity. Letter represent different species: C = Colpidium, S = Spirostomum, D = Dexiostoma, P = Paramecium, L = Loxocephalus', fig.align="center", fig.height=16, fig.width=25}
+library(readr)
+community_selection <- read_csv("Data/community_selection.csv")
+
+
+## calculate divergence based on slopes
+
+selection_div<-apply(community_selection,1,function(r){
+  slopes<-dplyr::filter(df_slopes,nutrients==r[6],
+                 temperature==r[5],
+  species_initial%in%strsplit(r[4],"")[[1]])
+
+  
+  divergence<-data.frame(divergence=(max(slopes$slope)-min(slopes$slope)-abs(abs(max(slopes$slope))-abs(min(slopes$slope))))/(max(slopes$slope)-min(slopes$slope)),
+                                treatment=r[2],
+                                composition=r[4])
+})
+
+selection_div<-as.data.frame(do.call("rbind", selection_div))
+selection_div<-full_join(selection_div,community_selection,join_by(treatment,composition))
+
+
+write_csv(selection_div,file="Data/divergence_df.csv")
+#selection_div<-read_csv("divergence_df.csv")
+
+
+
+
+plot_selection_div <- ggplot(data = selection_div, aes(x = richness, y = divergence, label = composition)) +
+  geom_point(size = 3) +  # Adjust point size directly instead of using aes()
+  geom_text_repel(size = 6, max.overlaps = 100) +  # Increase text size in geom_text_repel
+  facet_grid(temperature~ nutrients) +
+  theme_bw(base_size = 20) +  # Increase the base text size for theme elements
+  theme(
+    plot.title = element_text(size = 30, face = "bold"),       # Title size
+    axis.title = element_text(size = 25),                      # Axis titles
+    axis.text = element_text(size = 22),                       # Axis text
+    strip.text = element_text(size = 22),                      # Facet label text
+    legend.title = element_text(size = 22),                    # Legend title
+    legend.text = element_text(size = 22)                      # Legend text
+  )
+
+
+
+plot_selection_div
+```
+
+
+
+
+
+<!-- ##Check divergence -->
+
+<!-- ###Get surface slices -->
+
+<!-- ```{r } -->
+
+
+
+
+<!-- new_data <- expand_grid(temperature = seq(18, 28, by= 0.02), -->
+<!--                         nutrients = rep(2)) -->
+
+<!-- get_check_plot<-function(nutrient_level){ -->
+
+<!--   new_data <- expand_grid(temperature = seq(18, 28, by= 0.02), -->
+<!--                         nutrients = rep(nutrient_level)) -->
+<!--   num_rows <- nrow(new_data) -->
+
+<!-- pred_slice <- data.frame(matrix(nrow = num_rows, ncol = 0)) -->
+
+<!-- for (j in 1:length(new_nested_gams$species)) { -->
+<!--   predictions <- unlist(map(nested_gams$gams[j], ~ predict(.x, newdata = new_data))) -->
+<!--   pred_slice <- bind_rows(pred_slice, data.frame(prediction = predictions, species = new_nested_gams$species[j])) -->
+<!-- } -->
+
+<!-- pred_slice <- na.omit(pred_slice) -->
+
+<!-- pred_slice<-cbind(pred_slice,new_data) -->
+
+
+
+<!-- plot<-ggplot(data=pred_slice,aes(x=temperature,y=prediction,colour=species))+ -->
+<!--   #annotate("rect", xmin = 25, xmax = 28, ymin = -0.5, ymax = 1, -->
+<!--            #alpha = .4,fill = "grey")+ -->
+<!--   geom_line(linewidth=1.5)+ -->
+<!--   scale_color_brewer(palette = "Dark2",guide=NULL)+ -->
+<!--   ylab(expression("Growth rate ["* day^{-1} *  "]"))+ -->
+<!--   xlab("Temperature [°C]")+ -->
+<!--   scale_x_continuous(breaks = seq(18, 28, by = 1))+ -->
+<!--   theme(axis.title.x=element_text(size=16), -->
+<!--         axis.title.y = element_text(size = 16))+ -->
+<!--   ylim(-1.5,1)+ -->
+<!--   #geom_vline(xintercept = c(18, 21), linetype = "dashed", color = "black")+ -->
+<!--   geom_vline(xintercept = c(22, 25), linetype = "dashed", color = "black") -->
+<!-- #geom_vline(xintercept = c(25.05, 28), color = "black")+ -->
+<!--   #labs(title = paste("nutrient level",nutrient_level)) -->
+
+
+<!--   return(plot) -->
+<!-- } -->
+
+<!-- n_1<-get_check_plot(0.1) -->
+<!-- n_2<-get_check_plot(0.35) -->
+<!-- n_5<-get_check_plot(0.75) -->
+
+<!-- n_1+n_2+n_5 -->
+
+
+
+
+
+
+
+<!-- ``` -->
+
+<!-- # Figures Poster -->
+
+
+<!-- ```{r} -->
+
+<!-- df_int <- gather(df_slopes%>%dplyr::filter(nutrients=="0.35 g/L",temperature=="22-25 °C"), key = "source", value = "values", maxT_y, minT_y) -->
+<!-- df_int$source[df_int$source=="maxT_y"]<-25 -->
+<!-- df_int$source[df_int$source=="minT_y"]<-22 -->
+
+
+<!-- simple_slopes<-ggplot(data=df_int,aes(y=values,x=as.numeric(source),color=species,group=species))+ -->
+<!--   geom_vline(xintercept = c(22, 25), linetype = "dashed", color = "black")+ -->
+<!--   geom_point(size=3)+geom_line(linewidth=1.5)+ -->
+<!--   ylim(-1.5,1)+xlim(21.5,25.5)+ -->
+<!--   scale_color_brewer(palette = "Dark2")+ -->
+<!--   ylab("")+xlab("Temperature [°C]")+theme(axis.title.x=element_text(size=16), -->
+<!--         axis.title.y = element_text(size = 16)) -->
+<!--         #legend.direction = "horizontal" ) -->
+
+<!-- slopes_plot<-n_2+simple_slopes +plot_layout(widths = c(2, 1)) -->
+
+
+
+<!-- legend <- cowplot::get_legend(simple_slopes) -->
+
+<!-- # Arrange the legend horizontally using plot_grid -->
+<!-- horizontal_legend <- cowplot::plot_grid(legend) -->
+
+<!-- # Save the plot as a PDF -->
+<!-- ggsave("slopes_poster.pdf", plot = slopes_plot, width = 10, height = 6) -->
+
+<!-- ggsave("legend.pdf", plot = horizontal_legend, width = 10, height = 6) -->
+
+<!-- ``` -->
+
+
+<!-- ###stability mock plot -->
+
+
+<!-- ```{r} -->
+<!-- days_ts<-1:60 -->
+<!-- sp1<-sin(days_ts*0.075)+rnorm(60,0,0.2)+2 -->
+<!-- sp2<-sin(0.075*days_ts+3.14)+rnorm(60,0,0.2)+2 -->
+<!-- mock_ts<-data.frame(sp1,sp2) -->
+<!-- mock_ts<-gather(mock_ts,key="species",value="biomass",sp1,sp2) -->
+<!-- mock_ts<-cbind(mock_ts,days_ts) -->
+
+<!-- tot_biom<-mock_ts%>%group_by(days_ts)%>%summarize(biomass=sum(biomass)) -->
+<!-- tot_biom<-cbind(tot_biom,species=rep("tot_biom")) -->
+
+<!-- mock_ts<-rbind(mock_ts,tot_biom) -->
+
+<!-- mock_ts_plot<-ggplot(data=mock_ts,aes(x=days_ts,y=biomass,color=species))+ -->
+<!--   geom_line(linewidth=c(1.5))+ -->
+<!--   scale_color_manual(values=c("grey70","grey80","black"), -->
+<!--                      labels=c("species 1", "species 2", "total biomass"))+ -->
+<!--   ylab("Biomass")+xlab("Time")+ -->
+<!--   theme( -->
+<!--     axis.text.y=element_blank(), -->
+<!--     axis.ticks.y=element_blank(), -->
+<!--     axis.title.y=element_text(size=16), -->
+<!--     axis.title.x=element_text(size=16), -->
+<!--     legend.title = element_blank(),        -->
+<!--     legend.text = element_text(size=14), -->
+<!--     legend.position ="top" -->
+<!--   ) -->
+
+<!-- mock_CV<-mock_ts%>%group_by(species)%>%summarize(CV=sd(biomass)/mean(biomass)) -->
+
+<!-- mock_CV_plot<-ggplot(data=mock_CV,aes(y=1/CV,x=species,fill=species))+geom_col()+ -->
+<!--   scale_fill_manual(values=c("grey70","grey80","black"), -->
+<!--                      labels=c("species 1", "species 2", "total biomass"))+ -->
+<!--   ylab(expression("Temporal stability ["* CV^{-1} *  "]"))+xlab("Species")+ -->
+<!--   scale_x_discrete(labels=c("species 1", "species 2", "total biomass")) +   -->
+<!--   theme( -->
+<!--     axis.text.y=element_blank(), -->
+<!--     axis.ticks.y=element_blank(), -->
+<!--     axis.title.y=element_text(size=16), -->
+<!--     axis.title.x=element_blank(), -->
+<!--     legend.position="none", -->
+<!--   ) -->
+
+<!-- mock_plot_1<-mock_ts_plot+mock_CV_plot+plot_layout(widths = c(2, 1)) -->
+<!-- ggsave("mock_plot.pdf", plot = mock_plot_1, width = 10, height = 6) -->
+
+<!-- ## Mock plot low magnitude -->
+
+<!-- days_ts<-1:60 -->
+<!-- sp1<-0.5*sin(days_ts*0.075)+rnorm(60,0,0.2)+2 -->
+<!-- sp2<-0.5*sin(0.075*days_ts+1)+rnorm(60,0,0.2)+2 -->
+<!-- mock_ts<-data.frame(sp1,sp2) -->
+<!-- mock_ts<-gather(mock_ts,key="species",value="biomass",sp1,sp2) -->
+<!-- mock_ts<-cbind(mock_ts,days_ts) -->
+
+<!-- tot_biom<-mock_ts%>%group_by(days_ts)%>%summarize(biomass=sum(biomass)) -->
+<!-- tot_biom<-cbind(tot_biom,species=rep("tot_biom")) -->
+
+<!-- mock_ts<-rbind(mock_ts,tot_biom) -->
+
+<!-- mock_ts_plot<-ggplot(data=mock_ts,aes(x=days_ts,y=biomass,color=species))+ -->
+<!--   geom_line(linewidth=c(1.5))+ -->
+<!--   scale_color_manual(values=c("grey70","grey80","black"), -->
+<!--                      labels=c("species 1", "species 2", "total biomass"))+ -->
+<!--   ylab("Biomass")+xlab("Time")+ -->
+<!--   theme( -->
+<!--     axis.text.y=element_blank(), -->
+<!--     axis.ticks.y=element_blank(), -->
+<!--     axis.title.y=element_text(size=16), -->
+<!--     axis.title.x=element_text(size=16), -->
+<!--     legend.title = element_blank(),        -->
+<!--     legend.text = element_text(size=14), -->
+<!--     legend.position ="top" -->
+<!--   ) -->
+
+<!-- mock_CV<-mock_ts%>%group_by(species)%>%summarize(CV=sd(biomass)/mean(biomass)) -->
+
+
+
+<!-- mock_CV_plot<-ggplot(data=mock_CV,aes(y=1/CV,x=species,fill=species))+geom_col()+ -->
+<!--   scale_fill_manual(values=c("grey70","grey80","black"), -->
+<!--                      labels=c("species 1", "species 2", "total biomass"))+ -->
+<!--   ylab(expression("Temporal stability ["* CV^{-1} *  "]"))+xlab("Species")+ -->
+<!--   scale_x_discrete(labels=c("species 1", "species 2", "total biomass")) +   -->
+<!--   theme( -->
+<!--     axis.text.y=element_blank(), -->
+<!--     axis.ticks.y=element_blank(), -->
+<!--     axis.title.y=element_text(size=16), -->
+<!--     axis.title.x=element_blank(), -->
+<!--     legend.position="none", -->
+<!--   ) -->
+
+<!-- mock_plot_2<-mock_ts_plot+mock_CV_plot+plot_layout(widths = c(2, 1)) -->
+<!-- ``` -->
+
+
+
+
+
+<!-- ##surface plot -->
+<!-- ```{r} -->
+<!-- library(RColorBrewer) -->
+<!-- library(grid) -->
+<!-- library(gridExtra)  -->
+<!-- color_sp<-brewer.pal(5, "Dark2") -->
+<!-- s2d_plots <- list() -->
+
+<!-- for (i in seq_along(new_nested_gams$gams)) { -->
+<!--  species_name <- new_nested_gams$species[i] -->
+<!--  df<-dplyr::filter(rates,species==species_name) -->
+<!--  col<-color_sp[i] -->
+
+<!-- surface_2d<-ggplot(data=df,aes(x=temperature,y=nutrients,fill=predicted))+ -->
+<!--   geom_raster()+ -->
+<!--   scale_fill_gradient(high=col, low="white",guide = "none")+ -->
+<!--   #guides(fill = guide_colorbar(title = "", title.position = "top",  -->
+<!--     #                           direction = "vertical", barwidth =                                    2,barheight = 5,frame.colour = "black"))+ -->
+<!--   geom_contour(data=df,aes(x=temperature,y=nutrients,z=predicted),color = "grey40", linetype = "solid", bins=11)+ -->
+<!--   scale_x_continuous(breaks = seq(18, 28, by = 2))+ -->
+<!--    theme(strip.background = element_blank(),   -->
+<!--         strip.text = element_text(size = 10, color = "black"), -->
+<!--         strip.text.x = element_text(margin = margin(b = 10)), -->
+<!--         strip.text.y = element_text(margin = margin(l = 10)), -->
+<!--         axis.title.y = element_blank(), -->
+<!--         axis.title.x = element_blank(), -->
+<!--         legend.position = "right",   -->
+<!--         legend.direction = "vertical",aspect.ratio = 1, -->
+<!--         legend.key.height = unit(0.3, "cm"), -->
+<!--         legend.key.width = unit(0.5, "cm"), -->
+<!--         legend.key.size = unit(0.5,"cm"))+ -->
+<!--   labs(title=species_name,fill="")+ -->
+<!--   geom_segment(data = data.frame(y = c(0.01, 0.01), x = c(25, 25),  -->
+<!--                                  xend = c(28, 28),  yend = c(0.01, 0.01)),  -->
+<!--                aes(x, y, xend = xend, yend = yend), -->
+<!--                inherit.aes = FALSE, linetype = 1)+ -->
+<!--   geom_point(data=data.frame(x=c(25,28),y=c(0.01,0.01)),aes(x=x,y=y),inherit.aes = FALSE) -->
+
+
+
+
+<!--  # Save the plot in the list -->
+<!--   s2d_plots[[species_name]] <- surface_2d -->
+
+<!-- } -->
+
+
+<!-- s_dexiostoma <- s2d_plots[["Dexiostoma"]] -->
+<!-- s_colpidium <- s2d_plots[["Colpidium"]] -->
+<!-- s_loxocephalus <- s2d_plots[["Loxocephalus"]] -->
+<!-- s_paramecium <- s2d_plots[["Paramecium"]] -->
+<!-- s_spirostotum <- s2d_plots[["Spirostomum"]] -->
+
+
+
+<!-- #first change #guides() above -->
+
+<!-- legend_spir <- cowplot::get_legend(s_spirostotum) -->
+<!-- legend_dexi <- cowplot::get_legend(s_dexiostoma) -->
+<!-- legend_colp <- cowplot::get_legend(s_colpidium) -->
+<!-- legend_loxo <- cowplot::get_legend(s_loxocephalus) -->
+<!-- legend_para <- cowplot::get_legend(s_paramecium) -->
+
+<!-- legends<-ggarrange(legend_spir,legend_dexi,legend_colp,legend_loxo,legend_para,nrow=2,ncol=3) -->
+
+<!-- legends<-annotate_figure(legends, -->
+<!--                          top=text_grob("growth rate",size=15,vjust=1,hjust=1.3)) -->
+
+
+<!-- #run first surface plots without the guides on (don't rerun legends) -->
+
+<!-- fig1A<-ggarrange(s_dexiostoma,s_loxocephalus,s_paramecium,s_spirostotum,s_colpidium,legends,common.legend=F,nrow=2,ncol=3,align="hv")+ -->
+<!--   theme(plot.margin = margin(0.1,0.1,0.1,1.5, "cm"))  -->
+
+
+
+<!-- fig1A<-annotate_figure(fig1A,bottom=text_grob("temperature [°C]",size=15), -->
+<!--                        left=text_grob("nutrients [g/L]",size=15,vjust=2,rot=90)) -->
+<!-- ``` -->
+

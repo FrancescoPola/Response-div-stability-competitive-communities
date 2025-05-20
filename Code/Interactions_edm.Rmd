@@ -1,0 +1,432 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-01-07"
+---
+
+```{r setup, include=FALSE}
+
+library(ggplot2)
+library(tidyverse)
+library(gridExtra)
+library(rEDM)
+library("parallel")
+library(pracma)
+library(purrr)
+library(signal)
+library(ggfortify)
+library(data.table)
+library(patchwork)
+library(codyn)
+library(ggrepel)
+library(multispatialCCM)
+
+```
+
+
+To quantify species interactions, we used empirical dynamic modelling and the S-map approach developed by Deyle et al. (2016). This is a nonlinear time series analysis approach which does not require systems to be at equilibrium (Deyle et al. 2016). Rather, it can deal with interaction coefficients that are state dependent and thus vary over time, which is what we expected to find given the fluctuating temperature regimes. Importantly, this approach is sensitive to the embedding coordinates, meaning that only time-series variables for which causal relationships exist should be considered. This can be determined using causation tests like convergent cross mapping (CCM) which is based on the notion that information on the state of a causal variable can be recovered from the historical record of its target variable (Sugihara et al. 2012). CCM can deal with dynamic systems with weak to moderate coupling and shared underlying drivers like temperature which fitted our requirements. Analysis of interaction coefficients consisted of the following two steps: 
+
+(1) CCM: First, time series (species biomass) were interpolated using a cubic hermite spline to ensure equal distance between time points (Benincà et al. 2008; Daugaard et al. 2022) and subsequently normalised to mean = 0 and sd = 1 (Deyle et al. 2016). Replicate time series were then pooled for CCM analysis to improve our ability to detect causal relationships using the ‘multispatialCCM’ package (version 1.3). Note that this approach assumes identical dynamics in all three replicates. Samples are repeatedly drawn across replicates to construct libraries by means of nonparametric bootstrapping, ensuring that sampling order of time series do not bias tests of causality (Clark et al. 2015). For each potentially causal relationship, we determined the best embedding dimension using the ‘SSR_pred_boot’ function. We subsequently performed CCM analysis using these embedding dimensions and the ‘CCM_boot’ function and the ‘SurrogateData’ function from the ‘rEDM’ package (version 1.15.4). Tests for causality were considered positive if prediction skill was positive, significantly larger than values produced by surrogate time-series (p < 0.05) and if there was evidence for convergence (Sugihara et al. 2012), meaning that prediction skill significantly (p < 0.05) increased with increasing library (time-series) length. 
+
+(2) S-map: For each target in each microcosm, we estimated interaction coefficients of all previously detected interactor variables using the ‘SMap’ function from the ‘rEDM’ package. We estimated interactions in each microcosm separately but used all three replicates to create libraries. This yielded us time dependent estimates of elements of Jacobian matrices (Deyle et al. 2016), hence quantifying the response of each species to changes in its own population (diagonal elements) and to changes in each other's populations (off-diagonal elements). We then averaged interaction coefficients over time, leaving us with an average Jacobian for each microcosm (Daugaard et al. 2022). To aggregate coefficients on the community level we averaged again across all interactions. For microcosms where we did not find any causal relationships, we assumed a mean interaction coefficient of 0.
+
+
+# Load data frame (called async_df in the environment)
+```{r}
+load("Data/ts_for_interactions.RData")
+```
+
+
+# Bring Data frame into right format
+```{r}
+
+## Create temperature time series patterns
+
+pattern <- c(18, 18, 18, 19.5, 21, 21, 21, 19.5)
+T1<-rep(pattern, length.out = 60)
+T1<-data.frame(sample_T=T1[unique(async_df$day)+1],day=unique(async_df$day))
+
+
+pattern <- c(22, 22, 22, 23.5, 25, 25, 25, 23.5)
+T2<-rep(pattern, length.out = 60)
+T2<-data.frame(sample_T=T2[unique(async_df$day)+1],day=unique(async_df$day))
+
+pattern <- c(25, 25, 25, 26.5, 28, 28, 28, 26.5)
+T3<-rep(pattern, length.out = 60)
+T3<-data.frame(sample_T=T3[unique(async_df$day)+1],day=unique(async_df$day))
+
+
+## Add temperature time series and perform interpolation and normalization
+## Note that total time series goes from sampling day 1 (second day of the experiment) until the 59th day (here 58)-> 1:58
+
+
+df_S<-split(async_df,async_df$sample_ID)
+df_S<-mclapply(df_S,function(df){
+  if(unique(df$temperature)=="18-21"){
+    dfT<-T1
+  }
+  else if(unique(df$temperature)=="22-25"){
+    dfT<-T2
+  }
+  else{dfT<-T3}
+  
+   interpolated <- lapply(unique(df$predict_spec),function(s){
+     
+     new_time <- seq(min(df$day), max(df$day), length.out = 26)
+     
+    # Interpolate temperature
+     int_sampleT<-interp1(dplyr::filter(df,predict_spec==s)$day, dfT$sample_T, new_time, method = "cubic")
+     
+    # Interpolate biomass
+     df_transform<-data.frame(int_biomass=interp1(dplyr::filter(df,predict_spec==s)$day, dplyr::filter(df,predict_spec==s)$biomass, new_time, method = "cubic"),
+                original_biomass=dplyr::filter(df,predict_spec==s)$biomass,int_sampleT=int_sampleT,sample_T=dfT$sample_T,day=new_time,predict_spec=rep(s,length(new_time)))
+     
+    # Normalize interpolated biomass and Temperature
+     df_transform<-df_transform%>%mutate(norm_trans_biomass=(int_biomass - mean(int_biomass)) / sd(int_biomass),
+                                        norm_sampleT=(int_sampleT - mean(int_sampleT)) / sd(int_sampleT),rep_var=dplyr::filter(df,predict_spec==s)$rep_var,
+                                        sample_ID=dplyr::filter(df,predict_spec==s)$sample_ID)
+    
+   })
+   df<-do.call("rbind",interpolated)
+   df$norm_trans_biomass[is.na(df$norm_trans_biomass)]<-0
+
+   
+   return(df)
+})
+
+df_S<-do.call("rbind",df_S)
+
+df_S<-split(df_S,df_S$rep_var)
+
+# To test us this
+test_df_S<-df_S[12]
+```
+
+
+
+# CCM Analysis
+```{r pressure, echo=FALSE}
+
+set.seed(123)
+
+### Test of causality
+#####################
+
+rep_CCM<-mclapply(df_S,function(df){
+  var_pairs = expand.grid(target=unique(df$predict_spec),interactor = append(unique(df$predict_spec),"norm_sampleT"))
+  species<-unique(df$predict_spec)
+  
+dftemp<-lapply(species,function(s){
+  dfs<-df%>%dplyr::filter(predict_spec==s)%>%dplyr::select(day,norm_trans_biomass,norm_sampleT,sample_ID)
+  names(dfs)[names(dfs)=="norm_trans_biomass"]<-s
+  dfs<-split(dfs,dfs$sample_ID)
+  dfs<-lapply(dfs,function(df){
+    dna<-rbind(df,rep(NA,ncol(df)))
+  return(dna)
+  })
+  dfs<-do.call("rbind",dfs)
+  dfs<-dfs%>%mutate(position=1:nrow(dfs))
+  dfs<-dfs%>%dplyr::select(-c(sample_ID))
+  return(dfs)
+})
+
+dftemp<-reduce(dftemp,full_join,by=c("position","day","norm_sampleT"))
+dftemp<-dftemp[1:(nrow(dftemp)-1),]
+
+
+#### find best E
+maxE_test<-round(sqrt(26)) 
+
+best_E_df <- apply(var_pairs,1,function(t){
+  A<-dftemp%>%pull(t["target"])
+  B<-dftemp%>%pull(t["interactor"])
+  
+  max1 <- c()
+  max2 <- c()
+  for(i in 2:maxE_test){
+    ccm_out <- SSR_pred_boot(A=A,B=B,E=i)
+  # max1[i-1] <- ccm_out[1,2]
+    max2[i-1] <- ccm_out$rho
+  }
+    
+  if(length(max2)==0||all(is.na(max2))){
+    return(data.frame(tar=t["target"], interactor=t["interactor"],Best_E=NA,rho=NA))
+  }else{return(data.frame(tar=t["target"], interactor=t["interactor"],
+                   Best_E = which.max(max2)+1,
+                   rho=max(max2)))}
+})
+
+best_E_df<-do.call("rbind",best_E_df)
+
+
+best_E_df<-best_E_df%>%dplyr::filter(!is.na(Best_E))
+
+
+
+if(nrow(best_E_df)<1){
+  
+  return("No Best Es found")
+  
+}
+
+### Pairwise CCM
+
+ccm_all<-apply(best_E_df,1,function(v){
+  best_E<-as.numeric(v["Best_E"])
+  A<-dftemp%>%pull(v["interactor"])
+  B<-dftemp%>%pull(v["tar"])
+  
+  ccm_out<-CCM_boot(A=A,B=B,E=best_E,iterations = 1000)
+  
+  ccm_out$target<-v["tar"]
+  ccm_out$interactor<-v["interactor"]
+  rho_df<-data.frame(max_rho=ccm_out$rho[which.max(ccm_out$Lobs)])
+
+  ccm_out$rho_df<-rho_df
+  return(ccm_out)
+})
+
+
+### Tests for causality; 1. Test for convergence ; 2. Test of surrogates
+
+causl<-apply(best_E_df,1,function(p){
+  
+  ### Convergence testing
+  
+  target=p["tar"]
+  interactor=p["interactor"]
+  best_E<-as.numeric(p["Best_E"])
+  
+  
+  selected_lists <- Filter(Negate(is.null), lapply(ccm_all, function(x) {
+  if (x$target == target & x$interactor == interactor ) {
+    return(x)
+  }}))
+    
+  # Following code stems from the ccmtest function in multispatialCCM package
+  
+  p <- 1 - sum(selected_lists[[1]]$FULLinfo[1, ] < selected_lists[[1]]$FULLinfo[nrow(selected_lists[[1]]$FULLinfo), 
+    ], na.rm = T)/ncol(selected_lists[[1]]$FULLinfo)
+    
+  rho<-(0<selected_lists[[1]]$rho_df$max_rho)
+ 
+
+  ### test of surrogates
+  
+  ## 1 create surrogate data
+  
+
+    dfnna<-list(dftemp[1:26,],dftemp[28:53,],dftemp[55:nrow(dftemp),])
+    surr_list<-lapply(dfnna,function(ts){
+      
+      ts_int <- unlist(ts[,interactor])
+    
+      ts_tar <- unlist(ts%>%select(all_of(target)))
+    
+    # create surrogates of interactor ts; every replicate is treated separately
+      
+    if(interactor!="norm_sampleT") {
+    surr_interactor = SurrogateData(ts_int, method = "seasonal", T_period = 8,
+                                    num_surr = 1000, alpha = 3)
+  } else {
+    surr_interactor = SurrogateData(ts_int, method = "random_shuffle",
+                                    num_surr = 1000, alpha = 3)      
+  }
+    return(surr_interactor)
+    })  
+    
+    surr_interactor<-do.call("rbind",surr_list)
+    
+    
+    # Add back NAs 
+    
+    na_row <- rep(NA, ncol(surr_interactor))
+
+    # Split the matrix and insert NA rows
+mat_with_na <- rbind(
+  surr_interactor[1:26, ],  
+  na_row,    
+  surr_interactor[27:52, ],
+  na_row,       
+  surr_interactor[53:nrow(surr_interactor), ] 
+)
+    
+
+    # Prepare data frame 
+    ts_tar <- unlist(dftemp%>%select(all_of(target)))
+    interactor_data = as.data.frame(cbind( dftemp[,1],ts_tar, mat_with_na))
+    
+  names(interactor_data) = c("time", target, paste("T", as.character(seq(1, 1000)),	sep = ""))
+  
+  rho_surr <- data.frame(interactor_rho = numeric(1000))
+
+  
+    # Get rhos for all surrogate time series
+
+  for(i in 1:1000){
+    targetCol = paste("T", i, sep = "")
+    
+    A_ts<-interactor_data[,targetCol]
+    B_ts<-interactor_data[,target]
+
+    ccm_s <- CCM_boot(A=A_ts,B=B_ts,E=best_E,iterations = 10)
+    
+    rho_surr$interactor_rho[i] = ccm_s$rho[which.max(ccm_s$Lobs)]
+    
+  }
+  significance <- 1 - ecdf(rho_surr$interactor_rho)(unlist(selected_lists[[1]]$rho_df$max_rho))
+    ddf<-data.frame(pvalue=p,rho_larger_0=rho,target=target,interactor=interactor,sur_p=significance,E=best_E)
+   
+   return(ddf)
+})  
+
+causl<-do.call("rbind",causl)
+
+return(causl)
+})
+
+
+
+
+  
+
+```
+
+
+# SMap
+```{r}
+
+
+
+smaps_theta_var<- lapply(1:length(df_S),function(l){
+  
+  df<-df_S[[l]]
+  species<-unique(df$predict_spec)
+  
+  dftemp<-lapply(species,function(s){
+  dfs<-df%>%dplyr::filter(predict_spec==s)%>%dplyr::select(day,norm_trans_biomass,norm_sampleT,sample_ID)
+  names(dfs)[names(dfs)=="norm_trans_biomass"]<-s
+  dfs<-split(dfs,dfs$sample_ID)
+  dfs<-lapply(dfs,function(df){
+    dna<-rbind(df,rep(NA,ncol(df)))
+  return(dna)
+  })
+  dfs<-do.call("rbind",dfs)
+  dfs<-dfs%>%mutate(position=1:nrow(dfs))
+  dfs<-dfs%>%dplyr::select(-c(sample_ID))
+  return(dfs)
+})
+
+dftemp<-reduce(dftemp,full_join,by=c("position","day","norm_sampleT"))
+dftemp<-dftemp[1:(nrow(dftemp)-1),]
+
+
+causl<-rep_CCM[[l]]
+
+  
+  significant_pairwise_ccm_df <- causl %>%dplyr::filter(rho_larger_0 ==T, pvalue<=0.05,sur_p<=0.05)
+  
+
+if(nrow(significant_pairwise_ccm_df)>=1){
+  significant_pairwise_ccm_df<-split(significant_pairwise_ccm_df,significant_pairwise_ccm_df$target)
+
+  
+  ### smap ###########################
+  
+    smap<-lapply(significant_pairwise_ccm_df,function(r){
+  
+
+  interactor<-r$interactor
+  lib=c("1 26","28 53", "55 80")
+  pred<-c("1 26","28 53", "55 80")
+
+
+
+   sss<-lapply(pred,function(p){
+
+      best_theta<-PredictNonlinear(dataFrame=dftemp,E=length(r$interactor),target=unique(r$target),columns=r$interactor,lib=lib,pred=p,embedded=T,showPlot = F)
+      theta<-best_theta$Theta[which.max(best_theta$rho)]
+      print(theta)
+      s<-SMap(dataFrame=dftemp,E=length(r$interactor),target=unique(r$target),columns=r$interactor,theta=theta,lib=lib,pred=p,embedded=T,ignoreNan = T)
+      return(s)
+    })
+     return(sss)
+    })
+  } else{smap="empty"}
+        
+
+return(smap)
+})
+  
+
+
+names(smaps_theta_var)<-names(df_S)
+
+
+
+
+# Unpack ccm list
+results_list <- list()
+
+# Loop through each Sample_ID in the list
+for(sample_id in names(smaps_theta_var)) {
+  
+  # Loop through each target in the Sample_ID element
+  for(target in names(smaps_theta_var[[sample_id]])) {
+    for (replicate in 1:3){
+      
+    
+    # Extract the coefficients data frame
+    coeff_df <- smaps_theta_var[[sample_id]][[target]][[replicate]]$coefficients
+    
+    # Remove the C0 column
+    coeff_df <- coeff_df[ , !names(coeff_df) %in% "C0"]
+    
+    # Get the additional coefficient column names (after day)
+    extra_cols <- setdiff(names(coeff_df), "day")
+    
+    # Reshape the data: gather all extra columns into one column
+    reshaped_df <- tidyr::gather(coeff_df, key = "coefficient_name", value = "coefficient_value", extra_cols)
+    
+    # Add columns for Sample_ID and target
+    reshaped_df$Sample_ID <- sample_id
+    reshaped_df$target <- target
+    reshaped_df$replicate<-replicate
+    
+    # Add the reshaped data to the results list
+    results_list[[paste0(sample_id, "_", target,replicate)]] <- reshaped_df
+    }
+  }
+}
+
+
+interactions_df_theta_var <- do.call(rbind, results_list)
+
+
+# Create temperature and nutrients variables
+interactions_df_theta_var<-interactions_df_theta_var %>%
+  mutate(temperature = sapply(strsplit(as.character(Sample_ID), "_"), function(x) paste(x[3], x[4], sep = "-")))
+interactions_df_theta_var<- interactions_df_theta_var%>%mutate(nutrients = sub(".*_Nut([0-9]+\\.[0-9]+)$", "\\1", Sample_ID))
+interactions_df_theta_var<-interactions_df_theta_var%>%mutate(composition=sub("_.*", "", Sample_ID))
+interactions_df_theta_var<-interactions_df_theta_var%>%mutate(theta="var")
+
+interactions_df<-rbind(interactions_df_theta_var)
+
+# Exclude Intraspecific coefficients
+
+interactions_df<-dplyr::filter(interactions_df,coefficient_name!="∂C/∂C" & coefficient_name!="∂D/∂D" & coefficient_name!="∂L/∂L" &
+                          coefficient_name!="∂S/∂S" & coefficient_name!="∂P/∂P")
+
+
+
+
+names(interactions_df)[names(interactions_df)=="Sample_ID"]<-"rep_var"
+interactions_df<-interactions_df%>%mutate(sample_ID=paste0(rep_var,"_",replicate))
+
+
+#write_csv(interactions_df,file="interactions_df.csv")
+
+
+```
+
+
