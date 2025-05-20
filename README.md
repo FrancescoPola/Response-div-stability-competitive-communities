@@ -4,15 +4,7 @@ This repository contains data, analysis, and supplementary materials for the man
 
 Contents
 
-Data: Contains the datasets needed to reproduce the analysis.
-
-Figures_ms: Contains all the figures presented in the manuscript that are generated mainly in the .Rmd file called "Supplementary_info1".
-
-Management: Information regarding project management and author contributions.
-
-old:_exploratory Contains deprecated or older code used in exploratory analysis.
-
-r: Stores custom R functions used in the analysis.
+Additional analyses: contains code and report of analysis with different cutoff day (i.e. using only the last 20 or 40 days of the experiment) and just aim at showing that our results are robust to different cutoff length.
 
 Code: contains code to reproduce all analyses and results presented in the main text and supplementary information. There are multiple .Rmd files in this folder:
 
@@ -27,6 +19,16 @@ Code: contains code to reproduce all analyses and results presented in the main 
 - Supplementary_info3.Rmd: Analysis of the results of the Empirical Dynamic Modelling used to calculate species interactions.
 
 - Symmetry and Magnitude.Rmd: contains an exploratory analysis looking at how magnitude and and symmentry (two dimensions of imbalance) change with species richness and distribution of species responses.
+
+Data: Contains the datasets needed to reproduce the analysis.
+
+Figures_ms: Contains all the figures presented in the manuscript that are generated mainly in the .Rmd file called "Supplementary_info1".
+
+Management: Information regarding project management and author contributions.
+
+old:_exploratory Contains deprecated or older code used in exploratory analysis.
+
+r: Stores custom R functions used in the analysis.
 
 Reports: folder containing the .html and .pdf files generated knitting the .Rmd documents in the "Code" folder
 
