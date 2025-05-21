@@ -4,7 +4,7 @@ This repository contains data, analysis, and supplementary materials for the man
 
 Contents
 
-Additional analyses: contains code and report of analysis with different cutoff day (i.e. using only the last 20 or 40 days of the experiment) and just aim at showing that our results are robust to different cutoff length.
+Additional analyses: contains code and report of analysis with different cutoff day (i.e. using only the last 20 or 40 days of the experiment) and removing extinct species and just aim at showing that our results are robust to different cutoff length.
 
 Code: contains code to reproduce all analyses and results presented in the main text and supplementary information. There are multiple .Rmd files in this folder:
 
