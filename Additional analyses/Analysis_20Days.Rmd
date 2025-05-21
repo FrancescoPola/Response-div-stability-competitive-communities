@@ -44,6 +44,7 @@ library(broom)
 library(kableExtra)
 library(gt)
 library(lavaan)
+library("here")
 
 
 #devtools::install_github("canankarakoc/r_package_EDMhelper/EDMhelper")
@@ -79,15 +80,15 @@ The first 2/3 weeks of the experiment show a strong increase in community biomas
 
 ```{r  warning=FALSE, results='hide'}
 
-divergence_df <- read_csv("Data/divergence_df.csv")
-load("Data/dens_biomass_poly.RData")
+divergence_df <- read_csv(here("Data", "divergence_df.csv"))
+load(here("Data", "dens_biomass_poly.RData"))
 
-dd_all_pred<-read.csv("Data/morph_dd_pred.csv")
-dd_all_pred_nonoise<-read.csv("Data/morph_dd_pred_nonoise.csv")
+dd_all_pred<-read.csv(here("Data", "morph_dd_pred.csv"))
+dd_all_pred_nonoise<-read.csv(here("Data", "morph_dd_pred_nonoise.csv"))
 
-load("Data/ciliate_traits.Rdata")
+load(here("Data", "ciliate_traits.Rdata"))
 
-df_slopes <- read_csv("Data/df_slopes_cor.csv")
+df_slopes <- read_csv(here("Data", "df_slopes_cor.csv"))
 
 # needs to have id_new variable
 ciliate_traits <- ciliate_traits %>%

@@ -33,7 +33,7 @@ To quantify species interactions, we used empirical dynamic modelling and the S-
 
 # Load data frame (called async_df in the environment)
 ```{r}
-load("Data/ts_for_interactions.RData")
+load(here("Data", "ts_for_interactions.RData"))
 ```
 
 

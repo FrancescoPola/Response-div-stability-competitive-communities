@@ -57,9 +57,9 @@ In the present study, we investigated the relative contributions of competitive 
 
 # Load data sets
 ```{r include = FALSE}
-load("Data/complete_ts.RData")
-load("Data/pop_aggr.RData")
-interactions_df <- read_csv("Data/interactions_df.csv")
+load(here("Data", "complete_ts.RData"))
+load(here("Data", "pop_aggr.RData"))
+interactions_df <- read_csv(here("Data", "interactions_df.csv"))
 
 
 ```

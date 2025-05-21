@@ -76,15 +76,15 @@ This document is produced by an Rmarkdown file that includes code to reproduce f
 
 ```{r  warning=FALSE, results='hide'}
 
-divergence_df <- read_csv("Data/divergence_df.csv")
-load("Data/dens_biomass_poly.RData")
+divergence_df <- read_csv(here("Data", "divergence_df.csv"))
+load(here("Data", "dens_biomass_poly.RData"))
 
-dd_all_pred<-read.csv("Data/morph_dd_pred.csv")
-dd_all_pred_nonoise<-read.csv("Data/morph_dd_pred_nonoise.csv")
+dd_all_pred<-read.csv(here("Data", "morph_dd_pred.csv"))
+dd_all_pred_nonoise<-read.csv(here("Data", "morph_dd_pred_nonoise.csv"))
 
-load("Data/ciliate_traits.Rdata")
+load(here("Data", "ciliate_traits.Rdata"))
 
-df_slopes <- read_csv("Data/df_slopes_cor.csv")
+df_slopes <- read_csv(here("Data", "df_slopes_cor.csv"))
 
 # needs to have id_new variable
 ciliate_traits <- ciliate_traits %>%
@@ -464,7 +464,7 @@ doc <- read_docx() %>%
   body_add_par("Model Performance Comparison", style = "heading 1") %>%
   body_add_flextable(perf_table)
 
-print(doc, target = "tables/model_performance.docx")
+print(doc, target = here("tables", "model_performance.docx"))
 
 perf_table
 ```
@@ -611,7 +611,7 @@ doc <- read_docx() %>%
   body_add_flextable(perf_table2)
 
 
-print(doc, target = "tables/model_imb_vs_div.docx")
+print(doc, target = here("tables", "model_imb_vs_div.docx"))
 
 perf_table2
 
@@ -675,7 +675,7 @@ doc <- read_docx() %>%
 
 # Save the Word file
 # Save
-print(doc, target = "tables/anova_comparison1.docx")
+print(doc, targethere("tables", "anova_comparison1.docx"))
 
 
 ```
@@ -738,7 +738,7 @@ doc <- read_docx() %>%
 
 # Save the Word file
 # Save
-print(doc, target = "tables/anova_comparison2.docx")
+print(doc, target = here("tables", "anova_comparison2.docx"))
 
 
 ```
@@ -817,7 +817,7 @@ doc <- read_docx() %>%
 
 # Save the Word file
 # Save
-print(doc, target = "tables/anova_comparison3.docx")
+print(doc, target = here("tables", "anova_comparison3.docx"))
 
 
 ```
@@ -892,7 +892,7 @@ doc <- read_docx() %>%
 
 # Save the Word file
 # Save
-print(doc, target = "tables/anova_comparison4.docx")
+print(doc, target = here("tables", "anova_comparison4.docx"))
 
 ```
 
