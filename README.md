@@ -18,7 +18,7 @@ Code: contains code to reproduce all analyses and results presented in the main 
 
 - Supplementary_info3.Rmd: Analysis of the results of the Empirical Dynamic Modelling used to calculate species interactions.
 
-- Symmetry and Magnitude.Rmd: contains an exploratory analysis looking at how magnitude and and symmentry (two dimensions of imbalance) change with species richness and distribution of species responses.
+- Symmetry and Magnitude.Rmd: contains an exploratory analysis looking at how magnitude  and symmetry (two dimensions of imbalance) change with species richness and distribution of species responses.
 
 Data: Contains the datasets needed to reproduce the analysis.
 

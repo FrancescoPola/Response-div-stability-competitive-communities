@@ -28,25 +28,15 @@ library("purrr")
 library("signal")
 library("ggfortify")
 library("data.table")
-library("patchwork")
-library("codyn")
-library("ggrepel")
-library("lme4")
-library("lmerTest")
-library("MuMIn")
-library("RColorBrewer")
-library("broom")
-library("relaimpo")
-library("lavaanPlot")
-library(ggbeeswarm)
+library("here")
+library(flextable)
 library(performance)
-library(broom)
-library(kableExtra)
-library(gt)
 library(lavaan)
 library(officer)
-library(flextable)
-
+library(gt)
+library(ggbeeswarm)
+library(lmerTest)
+library(codyn)
 
 #devtools::install_github("canankarakoc/r_package_EDMhelper/EDMhelper")
 
@@ -305,6 +295,7 @@ plot_R_complete <- ggplot(data = complete_aggr, aes(x = richness, y = log10(1 / 
   scale_color_viridis_d(option = "inferno", begin = 0.2, end = 0.8) +
   labs(tag = "(a)")
 
+library(patchwork)
 # Combine plots in a single row
 combined_plot <- plot_R_complete | plot_T_complete | plot_N_complete 
 
@@ -675,7 +666,7 @@ doc <- read_docx() %>%
 
 # Save the Word file
 # Save
-print(doc, targethere("tables", "anova_comparison1.docx"))
+print(doc, here("tables", "anova_comparison1.docx"))
 
 
 ```
@@ -1269,28 +1260,7 @@ model_rev3 <-lmer(log10(stability) ~ log10(balance_f) + richness +
 
 
 
-complete_aggr_2_scaled <- complete_aggr_2 %>%
-  group_by(nutrients) %>%
-  mutate(scaled_stability = scale(log10(stability))) %>%
-  ungroup()
 
-
-ggplot(complete_aggr_2_scaled, aes(
-  x = log10(balance_f),
-  y = log10(mean_biomass),
-  color = scaled_stability,
-  shape = as.factor(nutrients))
-) +
-  geom_point(alpha = 0.8, size = 3) +
-  geom_smooth(method = "lm", se = FALSE) +
-  scale_color_viridis_c(option = "inferno", begin = 0.1, end = 0.8) +
-  theme_bw() +
-  labs(
-    color = "Scaled Stability\n(within nutrients)",
-    shape = "Nutrients",
-    x = "log10(Imbalance)",
-    y = "log10(Mean Biomass)"
-  )
 ```
 
 ```{r model_check_int, fig.cap='model check 1.', fig.align="center", fig.height=9, fig.width=12, include=TRUE, echo=TRUE}
@@ -1835,7 +1805,7 @@ model1C <- '
 # Fit the model
 
 fit1C <- sem(model1C,estimator="MLM",meanstructure = TRUE,data = sem_aggr3)
-modificationindices(fit1C)
+#modificationindices(fit1C)
 
 # Summarize the results
 summary(fit1C, standardized = TRUE,rsquare=T, fit.measures = TRUE)
@@ -1847,7 +1817,7 @@ summary(fit1C, standardized = TRUE,rsquare=T, fit.measures = TRUE)
 
 
 ```{r SEM, fig.cap = 'SEM.', fig.align="center", fig.height=6, fig.width=8}
-knitr::include_graphics(("figures_ms/SEM_3.png"))
+knitr::include_graphics((here("figures_ms", "SEM_3.png")))
 
 ```
 **Figure 16**: Structural equation model (SEM) showing the relationships between stability, asynchrony, population stability, imbalance, and nutrient levels. The model includes standardized regression coefficients and fit indices.
