@@ -1,0 +1,1281 @@
+---
+title: "Supplementary Window analysis: The balance of nature: Critical Role of Species Environmental Responses for Stability"
+author: "Til Hämmig, Francesco Polazzo, Owen L. Petchey, Frank Pennekamp"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    code_folding: hide
+    keep_md: no
+    fig_caption: false  
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+library("ggplot2")
+library("tidyverse")
+library("gridExtra")
+#library(rEDM)
+library("parallel")
+library("pracma")
+library("purrr")
+library("signal")
+library("ggfortify")
+library("data.table")
+library("here")
+library(flextable)
+library(performance)
+library(lavaan)
+library(officer)
+library(gt)
+library(ggbeeswarm)
+library(lmerTest)
+library(codyn)
+library(patchwork)
+
+#devtools::install_github("canankarakoc/r_package_EDMhelper/EDMhelper")
+
+```
+
+```{r include = FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      include = TRUE,
+                      warning = FALSE,
+                      message = FALSE,
+                      cache = FALSE)
+```
+
+# Introduction
+
+We found that imbalance stabilised communities through asynchrony and population stability when including the entire time series (26 sampling days) in the analysis. Here, we investigated how/if these relationships changed over time throughout the experiment. To do so, we chose a moving window approach.
+
+Expectations:
+  
+We expected the relationship of imbalance on population stability and on asynchrony to become weaker and eventually statistically insignificant as the experiment progressed:
+    
+  1. Batch culture effect: Nutrient concentrations decrease with time and waist products increase, affecting the performance of species. Hence, imbalance will become less accurate since it is based on performances estimated from the first few sampling days of the monoculture experiment when batch culture effects were the weakest.
+  2. Extinctions: With time, many populations eventually went extinct. However, imalance considers performances of all species and therefore does not account for those extinctions. 
+      
+
+
+# Load datasets, Data wrangling and Imbalance calculation
+
+```{r  warning=FALSE, results='hide'}
+
+divergence_df <- read_csv(here("Data", "divergence_df.csv"))
+load(here("Data", "dens_biomass_poly.RData"))
+
+dd_all_pred<-read.csv(here("Data", "morph_dd_pred.csv"))
+dd_all_pred_nonoise<-read.csv(here("Data", "morph_dd_pred_nonoise.csv"))
+
+load(here("Data", "ciliate_traits.Rdata"))
+
+df_slopes <- read_csv(here("Data", "df_slopes_cor.csv"))
+
+# needs to have id_new variable
+ciliate_traits <- ciliate_traits %>%
+  dplyr::mutate(
+    # Remove dots from the date
+    cleaned_date = gsub("\\.", "", date),
+    # Extract the part of id after the underscore
+    id_suffix = sub(".*_(.*)", "\\1", id),
+    # Combine cleaned_date, id_suffix, and species_initial into a new variable
+    id_new = paste0(cleaned_date, id_suffix, composition)
+  ) %>%
+  # Optionally, remove the intermediate columns to clean up
+  dplyr::select(-cleaned_date, -id_suffix,-new_id)
+
+uniqueN(ciliate_traits$id_new)==nrow(ciliate_traits) # all unique  ;)
+
+id_dd<-full_join(dd_all_pred,dplyr::select(ciliate_traits,id_new,biomass),join_by("id_new"))
+
+
+## add day variable
+
+#create a day variable from the date variable
+
+id_dd<-dplyr::mutate(id_dd,date=as.Date(date,format = "%d.%m.%y"))
+
+earliest_date<-min(id_dd$date)
+days_since_earliest<-as.numeric(id_dd$date-earliest_date)+1
+id_dd<-id_dd%>%dplyr::mutate(day=days_since_earliest)
+
+#create a summarised df on microcosm level with each species seperate
+# Make sure, that we have n_frames and not N_frames
+names(id_dd)[names(id_dd) == "N_frames"] <- "n_frames"
+
+#extrapolation_factor <- 9.301902  # for 16 x magnification 
+extrapolation_factor <- 9.828125  # for 25 x magnification 
+video_biomass_species <- c( "C", "P", "S","D","L","T")
+
+biomasses <- id_dd %>%
+  dplyr::group_by( day,temperature,nutrients,sample_ID,composition,predict_spec) %>% # group  by xxx
+  dplyr::summarize(
+    biomass = sum(biomass * n_frames, na.rm = TRUE) / (1 * 125) # if not 3 videos corrections is done below with dens_factor
+  ) %>%
+  dplyr::mutate(
+    biomass = biomass * extrapolation_factor,
+    )
+
+biomasses<-biomasses%>%dplyr::mutate(biomass=biomass*1000)
+
+dd_ts_id<-biomasses
+
+#fill up missing dates with biomass<-0
+
+fill_dd<-expand.grid(sample_ID=unique(dd_ts_id$sample_ID),day=unique(dd_ts_id$day),predict_spec=unique(dd_ts_id$predict_spec))
+complete_ts<-full_join(fill_dd,dd_ts_id,join_by(sample_ID,day,predict_spec))
+#complete_ts<-complete_ts%>%dplyr::filter(day>=10)
+
+complete_ts$biomass[is.na(complete_ts$biomass)]<-0
+complete_ts<-complete_ts%>%dplyr::mutate(composition=sub("_.*", "", sample_ID))
+complete_ts<-complete_ts %>%
+  dplyr::mutate(temperature = sapply(strsplit(as.character(sample_ID), "_"), function(x) paste(x[3], x[4], sep = "-")))
+complete_ts<- dplyr::mutate(complete_ts,nutrients = gsub(".*Nut(.*?)_.*", "\\1", sample_ID))
+
+# Now remove wrong combinations of composition and predict_spec / predict_spec
+
+complete_ts<- complete_ts %>%
+  rowwise() %>%
+  dplyr::filter(predict_spec %in% unlist(strsplit(composition, ""))) %>%
+  ungroup()  
+complete_ts<-dplyr::mutate(complete_ts,temperature=as.character(temperature),
+                    nutrients=as.character(nutrients),
+                    richness=nchar(composition))
+
+complete_ts<-complete_ts%>%group_by(sample_ID,composition,day)%>%dplyr::mutate(tot_biomass=sum(biomass))
+complete_ts<-complete_ts%>%dplyr::mutate(biom_contribution=biomass/tot_biomass)
+
+
+
+complete_ts<-complete_ts%>%dplyr::mutate(temperature=paste0(temperature," °C"),
+                                      nutrients=paste0(nutrients," g/L"))
+
+names(df_slopes)[names(df_slopes)=="species_initial"]<-"predict_spec"
+
+slope_ts<-full_join(dplyr::select(df_slopes,nutrients,predict_spec,temperature,slope),complete_ts)
+slope_ts<-slope_ts%>%dplyr::mutate(w_slope=biom_contribution*slope,
+                            sign=sign(slope))
+
+slope_ts<-slope_ts%>%group_by(sample_ID,temperature,nutrients,richness,composition,day,tot_biomass)%>%dplyr::summarise(
+  sum_w_slopes=abs(sum(w_slope)),
+                   mean_abs_slope=mean(abs(slope)),
+  sum_abs_slope=sum(abs(slope)),
+  abs_sum_slope=abs(sum(slope)),
+  symmetry=abs(sum(sign)))
+
+
+```
+
+
+
+
+# Window analysis
+
+Window size is 13 days (1/2 of entire time series length). Windows moved by +1 sampling day, yielding a total of 14 windows. 
+
+
+
+We looked at all estimated coefficients of interest: 
+
+  -synchrony_Gross ~ log10(balance)
+  
+   pop_stab ~ log10(balance)
+  
+   stability ~ -synchrony_Gross
+   
+   stability ~ pop_stab
+   
+Note that due to extinctions the number of observations decreases from 241 in the first window to 94 (39% of total number of microcosms) in the last window. Samples were removed when total microcosm was extinct in a given window, or if only one species was remaining.
+
+
+## Run analysis
+
+
+```{r}
+
+
+unique_days <- sort(unique(complete_ts$day))
+window_size <- 13
+n_windows <-length(unique_days) - window_size + 1
+
+# Create list of data frames using sliding window
+window_list <- lapply(1:n_windows, function(i) {
+  days_window <- unique_days[i:(i + window_size - 1)]
+  window_df<-complete_ts[complete_ts$day %in% days_window, ]
+  window_df%>%mutate(window=unique_days[i])
+})
+
+
+#windows_ts<-complete_ts%>%mutate(window=ifelse((day<=30), 1, 31 ))
+#window_list<-split(windows_ts,windows_ts$window)
+
+reg_coeffs<-lapply(window_list,function(w){
+ 
+  ### Apply threshold
+  
+  
+# 1. Create unique species_ID
+df_species_ID <- w %>% 
+  mutate(species_ID = paste(sample_ID, predict_spec, sep = "_"))
+
+# 2. Summarize how many zeros per species_ID
+filtered_df <- df_species_ID %>%
+  group_by(species_ID, sample_ID, predict_spec) %>%  # include predict_spec so we can count species later
+  summarize(number_0 = sum(biomass == 0), .groups = "drop")
+# 3. Keep species_IDs with number_0 <= 12
+
+  filtered_df <- filtered_df %>%
+  dplyr::filter(number_0 <= 12)
+
+
+
+# 4. Count how many remaining species per sample_ID
+valid_samples <- filtered_df %>%
+  group_by(sample_ID) %>%
+  dplyr::filter(n() >= 2) %>%  # keep sample_IDs with >=2 species left
+  pull(sample_ID) %>% 
+  unique()
+
+# 5. Filter original df to keep only valid sample_IDs
+df_species_ID_filtered <- df_species_ID %>%
+  dplyr::filter(sample_ID %in% valid_samples,species_ID%in%filtered_df$species_ID)
+
+  
+  # introduce slopes of
+df_species_ID_filtered<-df_species_ID_filtered%>%inner_join(slope_ts)
+
+
+
+
+  aggr_ts <- df_species_ID_filtered %>%
+  group_by( sample_ID) %>%
+  arrange(day) %>%
+  mutate(
+    # Create a flag for non-zero tot_biomass
+    non_zero_biomass = tot_biomass != 0,
+    # Find the last non-zero day
+    last_non_zero_day = ifelse(any(non_zero_biomass), max(day[non_zero_biomass], na.rm = TRUE), NA),
+    # Find the first zero day after the last non-zero day
+    first_zero_day = ifelse(
+      !is.na(last_non_zero_day),
+      min(day[!non_zero_biomass & day > last_non_zero_day], na.rm = TRUE),
+      NA
+    ),
+    # Flag for days after the first zero day
+    is_after_first_zero_day = ifelse(!is.na(first_zero_day), day > first_zero_day, FALSE)
+  ) %>%
+  ungroup()
+
+aggr_ts<-aggr_ts%>%mutate(rep_var=sub("_[^_]+$", "", sample_ID))
+
+
+
+
+
+
+
+
+
+  complete_aggr<-aggr_ts%>%group_by(composition,nutrients,temperature,sample_ID)%>%reframe(
+  avg_w_sumslopes=mean(sum_w_slopes,na.rm = T),
+  abs_sum_slope=mean(abs_sum_slope),
+  magnitude=mean(mean_abs_slope),
+  symmetry=mean(symmetry),
+  sum_abs_slope=mean(sum_abs_slope),
+  CV=sd(tot_biomass)/(mean(tot_biomass)),
+  sd_tot=sd(tot_biomass),
+  mean_biomass=(mean(tot_biomass)),
+  first_zero_day=unique(first_zero_day))
+
+complete_aggr<-right_join(divergence_df,complete_aggr,by=join_by(composition,nutrients,temperature))%>%
+  mutate(richness=as.factor(richness))
+
+
+
+
+complete_aggr <- complete_aggr %>% mutate(stability = 1/CV) %>%
+  dplyr::rename(balance_f = abs_sum_slope,
+                balance_r = avg_w_sumslopes)
+
+
+
+number_0s <- df_species_ID %>%
+  group_by(sample_ID) %>%  
+  summarize(number_0 = sum(biomass == 0), .groups = "drop")
+
+complete_aggr<-complete_aggr%>%left_join(number_0s)
+
+complete_aggr<-complete_aggr%>%mutate(number_0=number_0/as.numeric(richness))
+
+complete_aggr_2<- complete_aggr %>%
+  # Remove the units from the 'nutrients' and 'temperature' columns
+  mutate(
+    nutrients = as.numeric(gsub(" g/L", "", nutrients)),  # Convert nutrients to numeric
+    temperature = gsub(" °C", "", temperature)            # Remove the unit but keep as character
+  ) %>%
+  
+  mutate(
+    temperature = case_when(
+      temperature == "18-21" ~ 1,
+      temperature == "22-25" ~ 2,
+      temperature == "25-28" ~ 3
+    )
+  )
+
+
+
+
+
+complete_aggr_2<-complete_aggr_2%>%mutate(resid_temp=lm(data=complete_aggr_2, temperature ~ log10(balance_f))$residuals,
+                                          resid_nut=lm(data=complete_aggr_2, nutrients ~ log10(balance_f))$residuals)
+
+
+
+
+### Get asynchrony measures
+
+async_df <- df_species_ID_filtered
+
+
+async_Gross <- async_df %>% group_by(composition,sample_ID) %>%
+  do(synchrony_Gross = synchrony(., "day", "predict_spec",
+                              "biomass", metric = "Gross")
+         
+         )
+async_Gross<-dplyr::mutate(async_Gross,synchrony_Gross=synchrony_Gross%>%unlist())
+async_aggr<-left_join(complete_aggr_2,async_Gross,join_by(sample_ID,composition))
+
+
+async_Loreau <- async_df %>% group_by(composition,sample_ID) %>%
+  do(synchrony_Loreau = synchrony(., "day", "predict_spec",
+                              "biomass", metric = "Loreau"))
+async_Loreau<-dplyr::mutate(async_Loreau,synchrony_Loreau=synchrony_Loreau%>%unlist())
+
+async_aggr<-full_join(async_aggr,async_Loreau,join_by(sample_ID,composition))
+
+
+### Get population stability
+
+
+pop_aggr<-df_species_ID_filtered%>%group_by(sample_ID,predict_spec)%>%summarize(pop_CV=sd(biomass)/mean(biomass),mean_biom_contribution=mean(biom_contribution,na.rm=T), pop_V= sd(biomass))
+
+
+
+pop_aggr<-pop_aggr%>%group_by(sample_ID)%>%summarize(sum_sd_squared=mean((sum(pop_V))^2),
+                                                     w_pop_CV=sum(pop_CV*mean_biom_contribution, na.rm=T))
+
+
+pop_aggr<-pop_aggr%>%group_by(sample_ID)%>%left_join(async_aggr,pop_aggr,by="sample_ID")
+
+
+
+pop_aggr<-pop_aggr%>%mutate(window=unique(w$window))
+
+
+ 
+
+
+even_aggr<-df_species_ID_filtered%>%group_by(sample_ID,predict_spec,richness)%>%summarize(mean_biom_contribution=mean(biom_contribution,na.rm=T))%>%ungroup()
+ 
+ 
+even_aggr<-even_aggr%>%group_by(sample_ID,richness)%>%reframe(H= -sum(mean_biom_contribution*log(mean_biom_contribution)))
+even_aggr<-even_aggr%>%mutate(evenness=H/log(as.numeric(richness)),
+                              richness=as.factor(richness))
+ 
+even_aggr<-full_join(even_aggr,pop_aggr)
+
+})
+
+
+df_asyn_mag<-do.call(rbind,reg_coeffs)
+
+
+plot_mag_asyn<-ggplot(data=df_asyn_mag,aes(x=log10(),y=-synchrony_Gross))+
+  geom_boxplot()
+
+
+
+
+sem_list<-lapply(reg_coeffs,function(df){
+
+  sem_aggr3 <- df %>% ungroup%>%
+  mutate(
+    log_balance_f = log10(balance_f),
+    log_balance_r = log10(balance_r),
+    stability = log10(1 / CV),
+    temperature=(temperature),
+    asynchrony_Gross= (-synchrony_Gross),
+    asynchrony_Loreau= (-synchrony_Loreau),
+    pop_stability= log10(1/w_pop_CV),
+    mean_biomass = mean_biomass,
+    richness=as.numeric(richness),
+    interaction=(-synchrony_Gross)*pop_stability
+    #Keep it as an ordered factor
+  )
+
+
+
+model1C <- '
+
+  stability ~ asynchrony_Gross
+  +pop_stability
+  
+  asynchrony_Gross ~ log_balance_f + nutrients 
+  pop_stability~log_balance_f + nutrients
+
+
+
+'
+
+
+
+
+
+# Fit the model
+
+fit <- sem(model1C,estimator="MLM",meanstructure = TRUE,data = sem_aggr3)
+
+#modificationindices(fit1C)
+r2_vals <- inspect(fit, "r2")
+
+n_obs_val <- lavInspect(fit, "nobs")
+std_est <- parameterEstimates(fit, standardized = TRUE)
+std_est%>%mutate(window=unique(df$window),fit=fitMeasures(fit, "pvalue"),
+                 R2_asynchrony = r2_vals["asynchrony_Gross"],
+                 R2_pop_stab=r2_vals["pop_stability"],
+                 n_obs = n_obs_val)
+
+})
+
+
+sem_coeffs<-do.call(rbind,sem_list)
+
+
+```
+## Window plots
+
+
+```{r}
+
+
+### Effects of balance 
+
+SEM_bal_asyn <- ggplot(data = sem_coeffs %>%
+         dplyr::filter(op == "~", rhs == "log_balance_f", lhs == "asynchrony_Gross"),
+       aes(x = window%>%as.factor, y = est)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = ci.lower, ymax = ci.upper), width = 0.2) +
+  geom_text(aes(label = paste0("n = ", round(n_obs, 2))),
+            vjust = -1.5, size = 3,hjust=1.25) +
+  geom_hline(yintercept=0,linetype="dashed")+
+  theme_bw() +
+  labs(title = "Effect of log(imbalance) on Asynchrony (Gross)",
+       x = "Start window (day)")
+
+  
+SEM_bal_popstab <- ggplot(data = sem_coeffs %>%
+         dplyr::filter(op == "~", rhs == "log_balance_f", lhs == "pop_stability"),
+       aes(x = window%>%as.factor, y = est)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = ci.lower, ymax = ci.upper), width = 0.2) +
+  geom_text(aes(label = paste0("n = ", round(n_obs, 2))),
+            vjust = -1.5, size = 3,hjust=1.25) +
+  theme_bw() +
+  geom_hline(yintercept=0,linetype="dashed")+
+  labs(title = "Effect of log(imbalance) on Population stability ",
+       x = "Start window (day)")
+
+
+### Effects on Stability
+
+SEM_popstab_stab<-ggplot(data = sem_coeffs %>%
+         dplyr::filter(op == "~", rhs == "pop_stability", lhs == "stability"),
+       aes(x = window%>%as.factor(), y = est)) +
+  geom_point() +
+   geom_text(aes(label = paste0("n = ", round(n_obs, 2))),
+            vjust = -1.5, size = 3,hjust=1.25) +
+  geom_errorbar(aes(ymin = ci.lower, ymax = ci.upper), width = 0.2) +
+  geom_hline(yintercept=0,linetype="dashed")+
+  theme_bw()+
+  labs(title = "Effect of Population Stability on Stability",
+       x = "Start window (day)")
+  
+  
+  
+  SEM_asyn_stab<-ggplot(data = sem_coeffs %>%
+         dplyr::filter(op == "~", rhs == "asynchrony_Gross", lhs == "stability"),
+       aes(x = window%>%as.factor(), y = est)) +
+  geom_point() +
+  geom_text(aes(label = paste0("n = ", round(n_obs, 2))),
+            vjust = -1.5, size = 3,hjust=1.25) +
+  geom_errorbar(aes(ymin = ci.lower, ymax = ci.upper), width = 0.2) +
+    geom_hline(yintercept=0,linetype="dashed")+
+  theme_bw()+
+  labs(title = "Effect of Asynchrony on Stability",
+       x = "Start window (day)")
+
+  
+  
+  
+  ### number of obs
+  
+    SEM_n_obs<-ggplot(data = sem_coeffs %>%
+         dplyr::filter(op == "~", rhs == "asynchrony_Gross", lhs == "stability"),
+       aes(x = as.factor(window), y = n_obs)) +
+  geom_point() +
+  theme_bw()+
+  labs(title = "Number of observations used in each window",  x = "Start window (day)",
+       y = "Number of observations")+
+      ylim(0,243)
+
+### Direct effect of imbalance
+  
+lm_list <- lapply(reg_coeffs, function(df) {
+
+model<-lmer(log10(stability) ~ log10(balance_f) +  richness + resid_temp * resid_nut+
+                        (1 | composition), data = df, REML = FALSE)
+
+  ci <- confint(model, parm = "log10(balance_f)", method = "Wald")
+  ci_df <- as.data.frame(ci)
+  names(ci_df) <- c("ci_lower", "ci_upper")
+
+  frame <- data.frame(
+    estimate = fixef(model)["log10(balance_f)"],ci_df,window=unique(df$window), n_obs= nobs(model)
+  )
+  
+
+# 
+  return(frame)  
+})
+
+lm_coeffs<-do.call(rbind,lm_list)
+
+### Effect of balance linear model
+  
+  LM_bal_stab<-ggplot(data=lm_coeffs,aes(x=window%>%as.factor(),y=estimate))+
+  geom_point()+
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.2) +
+  geom_hline(yintercept=0,linetype="dashed")+
+    geom_text(aes(label = paste0("n = ", round(n_obs, 2))),
+            vjust = -1.5, size = 3,hjust=1.25) +
+  theme_bw()+
+   geom_text(aes(label = paste0("n = ", round(n_obs, 2))),
+            vjust = -1.5, size = 3,hjust=1.25) +
+  labs(title = "Effect of log10(imbalance) on  Stability", x = "Start window (day)")
+  
+  
+  
+```
+
+
+```{r direct, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=12}
+LM_bal_stab
+```
+**Figure 1**
+Estimated direct effect of imbalance  on community stability in each window, using the linear mixed model from the main text. The effect was robust.
+
+
+
+```{r asynchrony/popstab~ stability, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=10, fig.width=12}
+SEM_asyn_stab/SEM_popstab_stab
+```
+
+**Figure 2**
+Estimated effect of asynchrony and population stability on community stability (SEM with same structure as in the main text). Effects were robust in all windows.
+
+
+
+
+
+
+
+
+```{r balance~population stability, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=12}
+SEM_bal_popstab
+```
+**Figure 3**
+Estimated effect of imbalance on population stability (SEM with same structure as in the main text). The effect was robust and negative in most windows. As expected, the estimate became statistically insignificant toward the end of the experiment, in part due to the reduced number of samples (~50% remaining).
+
+
+
+
+
+```{r balance~asynchrony, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=12}
+SEM_bal_asyn
+```
+**Figure 4**
+Estimated effect of imbalance on asynchrony in each window (SEM with same structure as in the main text). The effect changed from negative in the beginning to positive in the second half of the experiment.
+
+I line with our expectations, the negative effect of imbalance was most pronounced in the beginning. Surprisingly, this effect changed abruptly to positive about half way through the experiment. This finding ran contrary to our proposed mechanism from the main text and hence warranted further investigation.
+
+
+
+
+# Switch in sign of effect of imbalance
+
+
+
+```{r switch_sign, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=12}
+
+df_94_IDs<-df_asyn_mag%>%dplyr::filter(window==30)
+df_94<-df_asyn_mag%>%dplyr::filter(sample_ID %in% df_94_IDs$sample_ID)
+plot_switch<-ggplot() +
+  # Lines connecting before and after
+  geom_point(data = df_94%>%dplyr::filter(window==1), aes(x = log10(balance_f), y = -synchrony_Gross,color = as.factor(window))) +
+  
+  geom_smooth(data = df_94%>%dplyr::filter(window==1), aes(x = log10(balance_f), y = -synchrony_Gross, color =as.factor(window)),method="lm") +
+  geom_point(data = df_94%>%dplyr::filter(window==30), aes(x = log10(balance_f), y = -synchrony_Gross,color = as.factor(window))) +
+  geom_smooth(data = df_94%>%dplyr::filter(window==30), aes(x = log10(balance_f), y = -synchrony_Gross, color =as.factor(window)),method="lm") +
+   scale_color_manual(
+    values = c(`1` = "black", `30` = "red"),
+    labels = c(`1` = "Window 1", `30` = "Window 30")
+  ) +
+
+  labs(x = "log10(imbalance)", y = "asynchrony", color = "Window"  , tag = "a"
+    ) +
+  theme_bw()+
+    theme(
+    plot.tag.position = c(0, 1),  
+    plot.tag = element_text(size = 14, face = "bold")
+  )
+
+
+df_delta <- df_94 %>%
+  dplyr::filter(window %in% c(1, 30)) %>%              # keep only the two windows
+  select(sample_ID, window, synchrony_Gross,balance_f) %>% 
+  pivot_wider(
+    names_from  = window,
+    values_from = synchrony_Gross,
+    names_prefix = "win"
+  ) %>%
+  mutate(
+    delta_asynchrony = -win30 + win1
+  )
+
+
+delta_plot<-ggplot(data=df_delta,aes(y=(delta_asynchrony),x=log10(balance_f)))+
+  geom_point()+
+  geom_smooth(method="lm")+
+   labs(x = "log10(imbalance)", y = "delta asynchrony", color = "Window" , tag = "b"   ) +
+  theme_bw()+
+    theme(
+    plot.tag.position = c(0, 1),   
+    plot.tag = element_text(size = 14, face = "bold")
+  )
+
+
+```
+
+
+```{r plot_switch_sign, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=12}
+plot_switch+delta_plot
+```
+**Figure 5**
+Effect of imbalance on asynchrony of all 94 communities that persisted until the end of the experiment (a), both in window 1 (black) and 30 (red). The effect changed from negative to positive. Relationship between imbalance and the change of asynchrony (delta asynchrony) between window 1 and window 30 (b).
+
+
+
+We find that highly imbalanced communities were driving the change in the sign of the relationship between imbalance and asynchrony. More specifically, imbalance was associated with a larger increase in asynchrony (Fig. 5b). We investigated in detail how asynchrony changed in the latter half of the experiment to understand whether this increase in asynchrony was a real biological phenomena, or just a consequence of generally low abundances in later windows. We quantified asynchrony as proposed by Gross et al. (2014):
+
+
+$$
+\text{ asynchrony} = \frac{1}{n} \sum_{i}\text{corr}(Y_i, \sum_{j\neq i}Y_j)
+$$
+where n is total number of species in the community and Yi is biomass of the focal species. Importantly, this measure is based on correlations and is therefore sensitive to many zero‐biomass observations in the time series, which was the case for a lot of communities in the latter half of the experiment. Looking at all the remaining 94 communities in the last window (which covers the second half of the experiment), we can see that for many communities, the correlation values were not meaningful anymore as there were many zero‐observations (Fig. 6). 
+
+
+```{r}
+
+
+
+window_30<-window_list[[14]]
+
+window_30<-window_30%>%mutate(rest_biom=tot_biomass-biomass)
+
+
+
+ 
+# 1. Create unique species_ID
+df_species_ID <- window_30 %>% 
+  mutate(species_ID = paste(sample_ID, predict_spec, sep = "_"))
+
+# 2. Summarize how many zeros per species_ID
+filtered_df <- df_species_ID %>%
+  group_by(species_ID, sample_ID, predict_spec) %>%  # include predict_spec so we can count species later
+  summarize(number_0 = sum(biomass == 0), .groups = "drop")
+
+# 3. Keep species_IDs with number_0 <= 12
+
+  filtered_df <- filtered_df %>%
+  dplyr::filter(number_0 <=12)
+
+
+
+# 4. Count how many remaining species per sample_ID
+valid_samples <- filtered_df %>%
+  group_by(sample_ID) %>%
+  dplyr::filter(n() >= 2) %>%  # keep sample_IDs with >=2 species left
+  pull(sample_ID) %>% 
+  unique()
+
+# 5. Filter original df to keep only valid sample_IDs
+df_species_ID_filtered <- df_species_ID %>%
+  dplyr::filter(sample_ID %in% valid_samples,species_ID%in%filtered_df$species_ID)
+
+
+
+# Add correlation 
+df_species_ID_filtered<-df_species_ID_filtered%>%group_by(species_ID)%>%mutate(cor=cor(biomass,rest_biom))
+
+  
+label_df <- df_species_ID_filtered %>%
+  group_by(sample_ID, predict_spec) %>%
+  summarise(
+    cor = round(cor(biomass, rest_biom), 2),
+    x = min(biomass, na.rm = TRUE),       # label position x
+    y = max(rest_biom, na.rm = TRUE),     # label position y
+    .groups = "drop"
+  )
+
+Corr_plots<-ggplot(data=df_species_ID_filtered,aes(x=biomass,y=rest_biom,color=predict_spec))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+   geom_text(data = label_df,
+            aes(x = x, y = y, label = paste0("cor = ", cor), color = predict_spec),
+            inherit.aes = FALSE,
+            hjust = 0, vjust = 1.2, size = 3) +
+  theme_bw()+
+  labs(x="biomass of focal species", y= "residual community biomass",color= "focal species")+
+  facet_wrap(~sample_ID,ncol=7,scale="free")
+```
+
+
+
+```{r Gross_deep_dive, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=50, fig.width=17}
+Corr_plots
+```
+**Figure 6**
+Correlations between focal species and residual community biomass in the last window (sampling day 30 -  58). Asynchrony is calculated as the average of those values.
+
+
+
+## Change in Gross of selected communities
+
+Now let us look at a selection of communities and how asynchrony changes over time
+```{r}
+
+
+unique_days <- sort(unique(complete_ts$day))
+window_size <- 13
+n_windows <-length(unique_days) - window_size + 1
+
+# Create list of data frames using sliding window
+window_list <- lapply(1:n_windows, function(i) {
+  days_window <- unique_days[i:(i + window_size - 1)]
+  window_df<-complete_ts[complete_ts$day %in% days_window, ]
+  window_df%>%mutate(window=unique_days[i])
+})
+
+
+list_cor<-lapply(window_list,function(w){
+  
+  df_w<-w%>%mutate(rest_biom=tot_biomass-biomass)
+  
+
+# 1. Create unique species_ID
+df_species_ID <- df_w %>% 
+  mutate(species_ID = paste(sample_ID, predict_spec, sep = "_"))
+
+# 2. Summarize how many zeros per species_ID
+filtered_df <- df_species_ID %>%
+  group_by(species_ID, sample_ID, predict_spec) %>%  # include predict_spec so we can count species later
+  summarize(number_0 = sum(biomass == 0), .groups = "drop")
+
+# 3. Keep species_IDs with number_0 <= 12
+
+  filtered_df <- filtered_df %>%
+  dplyr::filter(number_0 <=12)
+
+
+
+# 4. Count how many remaining species per sample_ID
+valid_samples <- filtered_df %>%
+  group_by(sample_ID) %>%
+  dplyr::filter(n() >= 2) %>%  # keep sample_IDs with >=2 species left
+  pull(sample_ID) %>% 
+  unique()
+
+# 5. Filter original df to keep only valid sample_IDs
+df_species_ID_filtered <- df_species_ID %>%
+  dplyr::filter(sample_ID %in% valid_samples,species_ID%in%filtered_df$species_ID)
+
+
+# Add correlation 
+df_species_ID_filtered<-df_species_ID_filtered%>%group_by(species_ID)%>%mutate(cor=cor(biomass,rest_biom))
+
+df_species_ID_filtered<-df_species_ID_filtered%>%mutate(window=unique(w$window))
+  # introduce slopes of
+df_species_ID_filtered<-df_species_ID_filtered%>%inner_join(slope_ts)%>%inner_join(filtered_df)
+
+})
+
+cor_window<-do.call(rbind,list_cor)
+
+
+
+
+```
+
+
+### CDL_Tmp_22_25_Nut0.35_1
+
+```{r}
+  
+
+cor_selected<-cor_window%>%select(sample_ID,window,number_0,predict_spec,cor)%>%distinct()
+
+
+cor_selected<-cor_selected%>%group_by(sample_ID,window)%>%summarise(Gross=sum(unique(cor))/length(unique(cor)),tot_0s=sum(number_0))%>%ungroup()
+
+cor_CDL<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CDL_Tmp_22_25_Nut0.35_1"),aes(x=biomass,y=rest_biom,color=predict_spec))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  theme_bw()+
+  facet_wrap(~window, scale="free")+
+  labs(color = "Focal species", x= "Biomass of focal species", y= "Residual community biomass")
+
+CDL_components<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CDL_Tmp_22_25_Nut0.35_1"),aes((window),y=cor,color=predict_spec))+
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+   scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+   labs(color = "Focal species", x= "Start of window", y= expression(
+     Corr(Y[i], sum( Y[j], j != i))))
+
+
+
+
+
+  CDL_Gross<-ggplot(data=cor_selected%>%dplyr::filter(sample_ID=="CDL_Tmp_22_25_Nut0.35_1"),aes((window),y=Gross))+
+  geom_point(aes((window),y=Gross),color="black")+
+  geom_line(aes((window),y=Gross),color="black")+
+  theme_bw()+
+     scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+    labs( x= "Start of window", y= "Gross synchrony")
+  
+
+
+```
+
+
+
+```{r cor_CDL, results='hide', echo=FALSE, warning=FALSE, fig.align="center",  fig.height=7, fig.width=18}
+     cor_CDL  +(CDL_components/CDL_Gross)
+
+```
+**Figure 7**
+Correlations between focal species and residual species biomass and the resulting asynchrony over time. The increase in number of zero‐biomass observations eventually led to an abrupt spike in synchrony after window 14. This was caused by the window moving past a particular sampling day, illustrating how influential individual data points become when many zero‐biomass observations are present. After window 23, only one species was left and asynchrony could not be calculated anymore.
+
+
+
+### CLPS_Tmp_18_21_Nut0.75_2 
+
+
+
+
+```{r}
+
+
+
+
+
+
+cor_CLPS<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CLPS_Tmp_18_21_Nut0.75_2"),aes(x=biomass,y=rest_biom,color=predict_spec))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  theme_bw()+
+  facet_wrap(~window, scale="free")+
+  labs(color = "Focal species", x= "Biomass of focal species", y= "Residual community biomass")
+
+CLPS_components<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CLPS_Tmp_18_21_Nut0.75_2"),aes((window),y=cor,color=predict_spec))+
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+   scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+   labs(color = "Focal species", x= "Start of window", y= expression(
+     Corr(Y[i], sum( Y[j], j != i))))
+
+
+
+
+
+CLPS_Gross<-ggplot(data=cor_selected%>%dplyr::filter(sample_ID=="CLPS_Tmp_18_21_Nut0.75_2"),aes((window),y=Gross))+
+  geom_point(aes((window),y=Gross),color="black")+
+  geom_line(aes((window),y=Gross),color="black")+
+  theme_bw()+
+     scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+    labs( x= "Start of window", y= "Gross synchrony")
+  
+
+```
+
+
+```{r cor_CLPS, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=7, fig.width=18}
+     cor_CLPS  +(CLPS_components/CLPS_Gross)
+
+
+```
+
+**Figure 8**
+Example of a community where the number of zero‐biomass observations did not increase enough to render the asynchrony measure meaningless. While asynchrony did change over time, these dynamics likely resulted from real biological processes.
+
+
+## High imbalance communities
+
+Above, we presented evidence that asynchrony estimates become unreliable in later windows. Yet this alone does not explain the observed inversion of the imbalance–asynchrony relationship halfway through the experiment (Fig. 4). To unravel this, recall that the sign switch is driven by the most highly imbalanced communities (Fig.5). We therefore turn our attention to a subset of those extreme cases:
+
+
+```{r}
+
+
+plot_leverage <- ggplot(data = df_asyn_mag ,
+                        aes(x = log10(balance_f), y = -synchrony_Gross)) +
+  geom_point(cex = 0.1) +
+  facet_wrap(~window) +
+  geom_smooth(method = "lm") +
+
+
+  geom_point(data = df_asyn_mag %>% dplyr::filter(sample_ID == "CP_Tmp_25_28_Nut0.75_3"),
+             aes(x = log10(balance_f), y = -synchrony_Gross),
+             color = "red", size = 3) +
+  geom_text(data = df_asyn_mag %>% dplyr::filter(sample_ID == "CP_Tmp_25_28_Nut0.75_3"),
+            aes(x = log10(balance_f), y = -synchrony_Gross, label = composition),
+            color = "black", vjust = -1, size = 3) +
+
+
+  geom_point(data = df_asyn_mag %>% dplyr::filter(sample_ID == "CDLP_Tmp_25_28_Nut0.75_2"),
+             aes(x = log10(balance_f), y = -synchrony_Gross),
+             color = "red", size = 3) +
+  geom_text(data = df_asyn_mag %>% dplyr::filter(sample_ID == "CDLP_Tmp_25_28_Nut0.75_2"),
+            aes(x = log10(balance_f), y = -synchrony_Gross, label = composition),
+            color = "black", vjust = -1.1, size = 3) +
+
+
+  geom_point(data = df_asyn_mag %>% dplyr::filter(sample_ID == "CDPS_Tmp_25_28_Nut0.35_1"),
+             aes(x = log10(balance_f), y = -synchrony_Gross),
+             color = "red", size = 3) +
+  geom_text(data = df_asyn_mag %>% dplyr::filter(sample_ID == "CDPS_Tmp_25_28_Nut0.35_1"),
+            aes(x = log10(balance_f), y = -synchrony_Gross, label = composition),
+            color = "black", vjust = -1.2, size = 3) +
+
+  theme_bw()+
+  labs(y="asynchrony",x="log10(imbalance)")
+
+```
+
+
+```{r leverage, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=10, fig.width=10}
+plot_leverage
+```
+**Figure 9**
+Relationship of imbalance and asynchrony in each window (without accounting for the nutrient effect). Subset of highly imbalanced communities in red and labelled with community composition. 
+
+We can see that those communities switch from synchronous to slightly asynchronous, and with them the sign of the relationship between imbalance and asynchrony from negative to positive. This switch was caused by an increase in number of zero-observations:
+
+
+
+```{r}
+
+cor_CP<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CP_Tmp_25_28_Nut0.75_3"),aes(x=biomass,y=rest_biom,color=predict_spec))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  theme_bw()+
+  facet_wrap(~window, scale="free")+
+  labs(color = "Focal species", x= "Biomass of focal species", y= "Residual community biomass",tag = "c")+
+  theme(
+    axis.text.x = element_blank(),  
+    axis.text.y = element_blank(),  
+    axis.ticks   = element_blank(),
+    lot.tag.position = c(0, 1),    # upper-left 
+    plot.tag = element_text(size = 14, face = "bold")  )
+    
+  
+  CP_components<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CP_Tmp_25_28_Nut0.75_3"),aes((window),y=cor,color=predict_spec))+
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+   scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+   labs(color = "Focal species", x= "Start of window", y= expression(
+     Corr(Y[i], sum( Y[j], j != i))))
+  
+
+
+cor_CDLP<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CDLP_Tmp_25_28_Nut0.75_2"),aes(x=biomass,y=rest_biom,color=predict_spec))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  theme_bw()+
+  facet_wrap(~window, scale="free")+
+  labs(color = "Focal species", x= "Biomass of focal species", y= "Residual community biomass", tag="b")+
+   theme(
+    axis.text.x = element_blank(),  
+    axis.text.y = element_blank(),  
+    axis.ticks   = element_blank(),
+    lot.tag.position = c(0, 1),    # upper-left 
+    plot.tag = element_text(size = 14, face = "bold")  )
+
+CDLP_components<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CDLP_Tmp_25_28_Nut0.75_2"),aes((window),y=cor,color=predict_spec))+
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+   scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+   labs(color = "Focal species", x= "Start of window", y= expression(
+     Corr(Y[i], sum( Y[j], j != i))))
+  
+
+
+
+cor_CDPS<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CDPS_Tmp_25_28_Nut0.35_1"),aes(x=biomass,y=rest_biom,color=predict_spec))+
+  geom_point()+
+  geom_smooth(method="lm",se=F)+
+  theme_bw()+
+  facet_wrap(~window, scale="free")+
+  labs(color = "Focal species", x= "Biomass of focal species", y= "Residual community biomass", tag="a")+
+   theme(
+    axis.text.x = element_blank(),  
+    axis.text.y = element_blank(),  
+    axis.ticks   = element_blank(),
+    lot.tag.position = c(0, 1),    # upper-left 
+    plot.tag = element_text(size = 14, face = "bold")  )
+
+CDPS_components<-ggplot(data=cor_window%>%dplyr::filter(sample_ID=="CDPS_Tmp_25_28_Nut0.35_1"),aes((window),y=cor,color=predict_spec))+
+  geom_point()+
+  geom_line()+
+  theme_bw()+
+   scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+   labs(color = "Focal species", x= "Start of window", y= expression(
+     Corr(Y[i], sum( Y[j], j != i))))
+
+
+CP_Gross<-ggplot(data=cor_selected%>%dplyr::filter(sample_ID=="CP_Tmp_25_28_Nut0.75_3"),aes((window),y=Gross))+
+  geom_point(aes((window),y=Gross),color="black")+
+  geom_line(aes((window),y=Gross),color="black")+
+  theme_bw()+
+     scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+    labs( x= "Start of window", y= "Gross synchrony")+
+    annotate("text", 
+           x = 27, y = 0.8, 
+           label = "CP", 
+           hjust = 1.1, vjust = 1.5, 
+           size = 6)
+
+
+
+
+CDLP_Gross<-ggplot(data=cor_selected%>%dplyr::filter(sample_ID=="CDLP_Tmp_25_28_Nut0.75_2"),aes((window),y=Gross))+
+  geom_point(aes((window),y=Gross),color="black")+
+  geom_line(aes((window),y=Gross),color="black")+
+  theme_bw()+
+     scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+    labs( x= "Start of window", y= "Gross synchrony")+
+  annotate("text", 
+           x = 27, y = 0.8, 
+           label = "CDLP", 
+           hjust = 1.1, vjust = 1.5, 
+           size = 6)
+
+
+
+
+
+
+CDPS_Gross<-ggplot(data=cor_selected%>%dplyr::filter(sample_ID=="CDPS_Tmp_25_28_Nut0.35_1"),aes((window),y=Gross))+
+  geom_point(aes((window),y=Gross),color="black")+
+  geom_line(aes((window),y=Gross),color="black")+
+  theme_bw()+
+     scale_x_continuous(breaks = seq(1, max(cor_selected$window, na.rm = TRUE), by = 1)) +
+    labs( x= "Start of window", y= "Gross synchrony")+
+    annotate("text", 
+           x = 27, y = 0.8, 
+           label = "CDPS", 
+           hjust = 1.1, vjust = 1.5, 
+           size = 6)
+    
+
+```
+
+
+
+```{r CDLP, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=21, fig.width=18}
+
+(cor_CDPS  +(CDPS_components/CDPS_Gross))/(cor_CDLP  +(CDLP_components/CDLP_Gross))/
+(cor_CP  +(CP_components/CP_Gross))
+
+```
+**Figure 10**
+Change of synchronous to asynchronous dynamics for three highly imbalanced communities. 
+
+
+All of those communities appear to become more asynchronous and thereby contribute to the inversion of the negative imbalance-asynchrony relationship. However, these asynchrony values are no longer meaningful because of the increased number of zero-biomass observations. Therefore, our confidence in estimates from windows covering the latter part of the time series is low, and we argue that they no longer describe the relationship between imbalance and asynchrony.
+
+
+
+
+## Distribution of zero-observations
+
+The previous section illustrates that for many communities, asynchrony became meaningless after a certain amount of time, and that this was the result of an increasing amount of zero-biomass observations. Later windows had more and more of these zero-observations (Fig. 11). Hence, estimates of the relationship between imbalance and asynchrony from those windows also became less reliable. 
+
+
+
+```{r}
+list_0s<-lapply(window_list,function(w){
+  
+  df_w<-w%>%mutate(rest_biom=tot_biomass-biomass)
+  
+
+# 1. Create unique species_ID
+df_species_ID <- df_w %>% 
+  mutate(species_ID = paste(sample_ID, predict_spec, sep = "_"))
+
+# 2. Summarize how many zeros per species_ID
+filtered_df <- df_species_ID %>%
+  group_by(species_ID, sample_ID, predict_spec) %>%  # include predict_spec so we can count species later
+  summarize(number_0 = sum(biomass == 0), .groups = "drop")
+
+
+# 3. Keep species_IDs with number_0 <= 12
+
+  filtered_df <- filtered_df %>%
+  dplyr::filter(number_0 <=12)
+
+
+
+# 4. Count how many remaining species per sample_ID
+valid_samples <- filtered_df %>%
+  group_by(sample_ID) %>%
+  dplyr::filter(n() >= 2) %>%  # keep sample_IDs with >=2 species left
+  pull(sample_ID) %>% 
+  unique()
+
+# 5. Filter original df to keep only valid sample_IDs
+df_species_ID_filtered <- df_species_ID %>%
+  dplyr::filter(sample_ID %in% valid_samples,species_ID%in%filtered_df$species_ID)
+
+
+df_species_ID_filtered <- df_species_ID_filtered %>%
+  group_by(species_ID, sample_ID, predict_spec) %>%  
+  summarize(number_0 = sum(biomass == 0), .groups = "drop")
+
+
+df_species_ID_filtered<-df_species_ID_filtered%>%mutate(window= unique(w$window))
+
+
+})
+
+number_0s<-do.call(rbind,list_0s)
+
+dist_zeros<-ggplot(data=number_0s,aes(x = number_0))+
+  geom_histogram()+
+  facet_wrap(~window,ncol=5)+
+  labs(x="number of zero-observations")
+```
+
+
+```{r number_0s, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=10, fig.width=12}
+dist_zeros
+```
+
+
+**Figure 11**
+Distribution of number of zero-biomass observations for each population included for each window.
+
+
+
+```{r }
+
+
+
+
+all_cor_window<-lapply(window_list,function(w){
+  
+  
+  
+  
+
+      window_df<-w%>%mutate(rest_biom=tot_biomass-biomass)
+
+
+
+       
+      # 1. Create unique species_ID
+      df_species_ID <- window_df %>% 
+        mutate(species_ID = paste(sample_ID, predict_spec, sep = "_"))
+      
+      # 2. Summarize how many zeros per species_ID
+      filtered_df <- df_species_ID %>%
+        group_by(species_ID, sample_ID, predict_spec) %>%  # include predict_spec so we can count species later
+        summarize(number_0 = sum(biomass == 0), .groups = "drop")
+      
+      # 3. Keep species_IDs with number_0 <= 12
+      
+        filtered_df <- filtered_df %>%
+        dplyr::filter(number_0 <=12)
+      
+      
+      
+      # 4. Count how many remaining species per sample_ID
+      valid_samples <- filtered_df %>%
+        group_by(sample_ID) %>%
+        dplyr::filter(n() >= 2) %>%  # keep sample_IDs with >=2 species left
+        pull(sample_ID) %>% 
+        unique()
+      
+      # 5. Filter original df to keep only valid sample_IDs
+      df_species_ID_filtered <- df_species_ID %>%
+        dplyr::filter(sample_ID %in% valid_samples,species_ID%in%filtered_df$species_ID)
+      
+      
+      
+      # Add correlation 
+      df_species_ID_filtered<-df_species_ID_filtered%>%group_by(species_ID)%>%summarise(cor=cor(biomass,rest_biom),window=unique(w$window))
+
+
+})
+
+all_cor<-do.call(rbind,all_cor_window)
+
+plot_dens_cor<-ggplot(data=all_cor,aes(x=cor))+
+   geom_density(aes(y = ..count..),          
+               adjust = 1,                  
+               fill = "steelblue", alpha = 0.3) +
+  facet_wrap(~window)+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  facet_wrap(~window) +
+  labs(x=expression(
+     Corr(Y[i], sum( Y[j], j != i))),
+     y="counts"
+    )
+```
+
+
+
+
+Looking at the distributions of correlations between the focal species and residual community biomass, we can see how the shape and position of the mean changes starting at window 14 (or about half way through the experiment). This change in the shape and mean coincided with the emergence of the positive relationship between imbalance and asynchrony (Fig. 4):
+
+```{r density_correlations, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=10, fig.width=12}
+plot_dens_cor
+```
+
+**Figure 12**
+Distribution of Correlations between focal species and residual community for each window.
+
+
+# Conclusion
+
+We found that the effect of imbalance on population stability was robust, while the effect on asynchrony was not. Asynchrony seemed positively related to imbalance in the second half of the experiment. However, this relationship was unreliable due to many zero-observations (because of low abundances), which caused the asynchrony measure to behave erratically. 

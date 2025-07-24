@@ -1,5 +1,5 @@
 ---
-title: "Supplementary Materials 1: The balance of nature: Critical Role of Species Environmental Responses for Stability"
+title: "Supplementary Materials 1: The Imbalance of Nature: Critical Role of Species Environmental Responses for Community Stability"
 author: "Til Hämmig, Francesco Polazzo, Owen L. Petchey, Frank Pennekamp"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
@@ -130,6 +130,7 @@ dd_ts_id<-biomasses
 fill_dd<-expand.grid(sample_ID=unique(dd_ts_id$sample_ID),day=unique(dd_ts_id$day),predict_spec=unique(dd_ts_id$predict_spec))
 complete_ts<-full_join(fill_dd,dd_ts_id,join_by(sample_ID,day,predict_spec))
 
+# Only first 30 days
 complete_ts$biomass[is.na(complete_ts$biomass)]<-0
 complete_ts<-complete_ts%>%dplyr::mutate(composition=sub("_.*", "", sample_ID))
 complete_ts<-complete_ts %>%
@@ -167,7 +168,8 @@ slope_ts<-slope_ts%>%group_by(sample_ID,temperature,nutrients,richness,compositi
                    mean_abs_slope=mean(abs(slope)),
   sum_abs_slope=sum(abs(slope)),
   abs_sum_slope=abs(sum(slope)),
-  symmetry=abs(sum(sign)))
+  symmetry=abs(sum(sign)),
+  abs_mean_slope=abs(mean(slope)))
 
 
 slope_ts<-slope_ts%>%dplyr::mutate(richness=as.factor(richness))
@@ -247,6 +249,7 @@ In the whole analysis, we calculated the temporal stability of total community b
 complete_aggr<-aggr_ts %>%group_by(composition,nutrients,temperature,sample_ID)%>%reframe(
   avg_w_sumslopes=mean(sum_w_slopes,na.rm = T),
   abs_sum_slope=mean(abs_sum_slope),
+  abs_mean_slope=mean(abs_mean_slope),
   magnitude=mean(mean_abs_slope),
   symmetry=mean(symmetry),
   sum_abs_slope=mean(sum_abs_slope),
@@ -305,7 +308,7 @@ combined_plot <-combined_plot
 # Display the final combined plot
 print(combined_plot)
 
-#ggsave("figures_ms/fig.1.png", plot = combined_plot, width = 20, height = 8, dpi = 600)
+#ggsave(here("figures_ms/fig.2.png"), plot = combined_plot, width = 20, height = 8, dpi = 600)
 
 ```
 **Figure 2**: Effects of richness (a), temperature (b), and nutrients (c) on community total biomass temporal stability.
@@ -409,7 +412,7 @@ We first compare how well divergence and imbalance predict stability (predictive
 ```{r results='hide', echo=FALSE, warning=FALSE, message=FALSE}
 
 complete_aggr <- complete_aggr %>% mutate(stability = 1/CV) %>% 
-  dplyr::rename(balance_f = abs_sum_slope,
+  dplyr::rename(balance_f = abs_mean_slope,
                 balance_r = avg_w_sumslopes)
 
 
@@ -549,7 +552,7 @@ We can see that the R squared of divergence as predictor of stability becomes sm
 
 ## Comparing unique explanatory power of imbalance and divergence
 
-Now we build a linear model were stability is modeled as a function of imbalance and divergence. 
+Now we build a linear model where stability is modeled as a function of imbalance and divergence. 
 Then, we compared the variance explained by the full model compared to a model containing either only imbalance or only divergence.
 
 
@@ -898,7 +901,37 @@ The function vip::vip for multiple linear regression, or linear models (LMs), us
 Motivation for the use of the associated 𝑡-statistic is given in Bring (1994) [https://www.tandfonline.com/doi/abs/10.1080/00031305.1994.10476059].
 
 ```{r vip1, fig.align="center", fig.height=4, fig.width=8, include=TRUE, echo=TRUE}
-vip::vip(lm_div_balance)
+
+# Standardize predictors (not response)
+
+
+df_std <- complete_aggr %>%
+  mutate(
+    log10_balance_f = scale(log10(balance_f))[,1],
+    divergence_std = scale(divergence)[,1]
+  )
+
+lm_std <- lm(log10(stability) ~ log10_balance_f + divergence_std, data = df_std)
+
+coef_df <- summary(lm_std)$coefficients[-1, , drop = FALSE] # remove intercept
+
+vi_data <- data.frame(
+  Variable = rownames(coef_df),
+  Importance = abs(coef_df[, "Estimate"])
+)
+
+# Relabel variables
+vi_data$Variable <- recode(vi_data$Variable,
+                          "log10_balance_f" = "Imbalance (log10)",
+                          "divergence_std" = "Divergence")
+
+# Plot
+
+ggplot(vi_data, aes(x = Importance, y = reorder(Variable, Importance))) +
+  geom_col(fill = "steelblue") +
+  labs(x = "Absolute standardized coefficient", y = NULL) +
+  theme_bw()
+
 ```
 **Figure 5**: Variable importance in the model including both imbalance and divergence as predictors of stability.
 
@@ -946,35 +979,10 @@ plot_main <- main_r_dd %>%
 
 plot_main
 
-#ggsave("figures_ms/fig.2.png", plot = plot_main, width = 20, height = 10, dpi = 600)
+
 ```
 **Figure 6**: Effects of fundamental and realised imbalance on total community biomass temporal stability.
 
-
-```{r effect_RD_nutrients, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=10, fig.width=20}
-plot_main <- main_r_dd %>%
-  ggplot(aes(x = (log10(balance)), y = log10(1/CV), color = type)) +
-  geom_point(aes(x = log10(balance), y = log10(1/CV)), size = 5, alpha = 0.65) +
-  geom_smooth(method = "lm", aes(x = log10(balance), y = log10(1/CV)), linewidth = 3, show.legend=F) +
-  theme_classic() +
-  scale_color_viridis_d(option = "inferno", begin = 0.3, end = 0.6) +
-  ylab("Temporal stability\nlog(mean/s.d.)")+
-  xlab("log10(Imbalance)") +
- theme(
-    axis.title.x = element_text(size = 25),
-    axis.title.y = element_text(size = 25),
-    axis.text = element_text(size = 20),                      # Axis text size             # Facet label text size
-    legend.title = element_text(size = 25),                   # Legend title size
-    legend.text = element_text(size = 25),                     # Legend text size
-        strip.background = element_rect(fill = "grey80", color = NA),  
-    strip.text = element_text(size = 25)) +
-  labs(color = "Imbalance") +  
-  facet_wrap(~nutrients, labeller = as_labeller(function(x) paste0("nutrients = ", x)))
-
-plot_main
-
-
-```
 
 
 We can see that imbalance is always negatively related to temporal stability, which means that balance in species responses promotes stability across richness levels. Interestingly, we see that there is little difference between fundamental and realised imbalance. Yet, as the richness increases, the relationship between realised imbalance and stability becomes steeper compared to fundamental balance. 
@@ -1004,8 +1012,8 @@ complete_aggr_2<- complete_aggr %>%
 
 
 # Fit the linear model with interaction
-lm_full_int1<-lm(data=complete_aggr_2,log10(stability)~log10(balance_f)+scale(nutrients)*scale(temperature)+richness)
-lm_full_int2<-lm(data=complete_aggr_2,log10(stability)~log10(balance_f)+ log10(balance_r)+scale(nutrients)*scale(temperature)+richness)
+lm_full_int1<-lm(data=complete_aggr_2,log10(stability)~log10(balance_f))
+lm_full_int2<-lm(data=complete_aggr_2,log10(stability)~log10(balance_f) + log10(balance_r))
 
 ```
 
@@ -1013,6 +1021,8 @@ lm_full_int2<-lm(data=complete_aggr_2,log10(stability)~log10(balance_f)+ log10(b
 ```{r include = TRUE, echo=TRUE}
 anova5 <- anova(lm_full_int1, lm_full_int2, test = "Chisq")
 
+chi_sq_value <- anova5$"Sum of Sq"[2]
+chi_sq_value
 
 anova_tidy5 <- broom::tidy(anova5)
 # Display the tidy ANOVA table using gt with formatted p-values and adjusted size
@@ -1144,8 +1154,8 @@ calculate_compositions <- function(data) {
   # Create a dataframe with combinations and their summed slopes
   result <- data.frame(
     composition = sapply(combinations, paste, collapse = ""),
-    sum_slopes = sapply(combinations, function(comb) {
-      sum(data$slope[data$predict_spec %in% comb])
+    avg_slopes = sapply(combinations, function(comb) {
+      mean(data$slope[data$predict_spec %in% comb])
     }),
     magnitude=sapply(combinations, function(comb) {
       sum(abs(data$slope[data$predict_spec %in% comb]))
@@ -1168,13 +1178,13 @@ all_combi_df <- df_slopes %>%
   }) %>%
   bind_rows()
  
-all_combi_df<-all_combi_df%>%mutate(balance=abs(sum_slopes),
+all_combi_df<-all_combi_df%>%mutate(balance=abs(avg_slopes),
                               richness=as.factor(nchar(composition)))
  
 all_combi_df<-all_combi_df%>%mutate(is_selected=all_combi_df$balance%in%complete_aggr$balance_f)
  
 test_representative<-t.test(log10(dplyr::filter(all_combi_df,is_selected==F)$balance),log10(dplyr::filter(all_combi_df,is_selected==T)$balance),var.equal = F)
- 
+#  
  
 lm_representative<-lm(data=all_combi_df,log10(balance)~temperature*is_selected)
 #check_model(lm_representative)
@@ -1186,7 +1196,7 @@ plot_all_combi<-ggplot(data=all_combi_df)+theme_bw(base_size = 25)+
                                   dodge.width=2, size= 6) +
  
   xlab("Temperature regime")+
-  ylab("log10(balance)")+
+  ylab("log10(imbalance)")+
   labs(color="Temperature regime", tag = "(a)")+
   scale_color_viridis_d(option = "inferno", begin = 0.2, end = 0.8)+
   facet_wrap(~is_selected,labeller = as_labeller(c("FALSE"="Not Selected","TRUE"="Selected")))+
@@ -1219,11 +1229,11 @@ R2_env_bal<-data.frame(R2=c(sum_lm_balance$r.squared,sum_lm_env$r.squared,sum_lm
                             sum_lm_balance_env$r.squared-sum_lm_env$r.squared,
                             sum_lm_balance_env$r.squared-sum_lm_balance$r.squared,
                             0),
-                       model=factor(c("log10(balance)","nut * temp","log10(balance) + nut * temp","log10(balance)","nut * temp","log10(balance) + nut * temp")),
+                       model=factor(c("log10(imbalance)","nut * temp","log10(imbalance) + nut * temp","log10(imbalance)","nut * temp","log10(imbalance) + nut * temp")),
                        type=c("total","total","total","unique","unique","unique"))
  
  
-plot_R2_bal_env<-ggplot(data=R2_env_bal%>%dplyr::filter(type=="total"),aes(y=R2,x=factor(model,levels=c("log10(balance)","nut * temp","log10(balance) + nut * temp")),fill=type))+
+plot_R2_bal_env<-ggplot(data=R2_env_bal%>%dplyr::filter(type=="total"),aes(y=R2,x=factor(model,levels=c("log10(imbalance)","nut * temp","log10(imbalance) + nut * temp")),fill=type))+
   geom_col(width=0.7)+
   geom_col(data=R2_env_bal%>%dplyr::filter(type=="unique"),width=0.7)+
   theme_classic()+
@@ -1252,7 +1262,6 @@ This may be related to the fact that imbalance was calculated using monoculture 
 We first investigate the effect of **imbalance** on stability while accounting for different environmental contexts. We fit a linear mixed-effects model including temperature, nutrient level, and composition as random factors to account for the different environmental contexts in which the imbalance was measured. This allows us to assess the effect of imbalance on stability while controlling for the influence of temperature and nutrient levels.
 
 ```{r include=TRUE, echo=TRUE}
-
 model_rev3 <-lmer(log10(stability) ~ log10(balance_f) + richness + 
        (1 + temperature + nutrients || composition),
      data = complete_aggr_2,
@@ -1399,8 +1408,6 @@ model_with_random <- lmer(log10(stability) ~ log10(balance_f) + resid_temp*resid
 # Compare the models
 anova(model_no_random, model_with_random)
 
-
-
 ```
 
 A model with random slopes for log10(balance_f) is not better than one without. Thus, we will use the model without random slopes for log10(balance_f) for the rest of the analysis.
@@ -1408,6 +1415,7 @@ A model with random slopes for log10(balance_f) is not better than one without. 
 ```{r model_check_int2, fig.cap='model check 1.', fig.align="center", fig.height=9, fig.width=12, include=TRUE, echo=TRUE}
 # check model's assumptions
 check_model(model_no_random)
+
 ```
 
 **Figure 10**: Model check for the linear mixed-effects model with balance, richness, and the residuals of temperature and nutrients as predictors of stability. The model fits well the data.
@@ -1417,7 +1425,6 @@ check_model(model_no_random)
 
 ```{r}
 # Create a gtsummary table
-
 
 tbl_summary <- gtsummary::tbl_regression(model_no_random, intercept = TRUE,
                                           label = list("(Intercept)" = "Intercept",
@@ -1464,9 +1471,9 @@ tbl_summary
 
 The linear mixed-effects model was fitted by maximum likelihood (ML) with log-transformed stability as the response variable. The fixed effects included log10(balance_f), richness, the residuals of temperature (resid_temp), and nutrients (resid_nut), as well as their interaction term. The random effect was specified for the composition group, which accounted for potential variability between different composition categories.
 
-The model’s results indicated that log10(balance_f) (Estimate = -0.078, SE = 0.0079, p < 2e-16), resid_temp (Estimate = -0.099, SE = 0.0093, p < 2e-16), and resid_nut (Estimate = 0.248, SE = 0.018, p < 2e-16) all had significant effects on stability, with both resid_temp and resid_nut showing large, statistically significant relationships with stability. Additionally, the interaction term resid_temp:resid_nut (Estimate = -0.091, SE = 0.031, p = 0.0037) was also significant, indicating that the combined effects of temperature and nutrients on stability are not independent, but interact in shaping stability.
+The model’s results indicated that log10(balance_f) (Estimate = -0.078, SE = 0.0079, p < 2e-16), resid_temp (Estimate = -0.099, SE = 0.0093, p < 2e-16), and resid_nut (Estimate = 0.248, SE = 0.018, p < 2e-16) all had significant effects on stability, with both resid_temp and resid_nut showing large, statistically significant relationships with stability. Additionally, the interaction term resid_temp:resid_nut (Estimate = -0.11, SE = 0.031, p < 2e-16) was also significant, indicating that the combined effects of temperature and nutrients on stability are not independent, but interact in shaping stability.
 
-Richness levels (richness3 and richness4) did not show significant effects on stability (p > 0.77), suggesting that, within the context of this model, variations in richness do not explain substantial variation in community stability.
+Richness levels (richness3 and richness4) did not show significant effects on stability (p > 0.9), suggesting that, within the context of this model, variations in richness do not explain substantial variation in community stability.
 
 
 **Table 13**: ANOVA table of the linear mixed-effects model with balance, richness, and the residuals of temperature and nutrients as predictors of stability.
@@ -1761,8 +1768,8 @@ fig4 <- (plot_asynch_CV_G + plot_pop_aggr_balance) /
 
 # Add (a), (b), (c), (d) tags
 fig4 <- fig4 + plot_annotation(tag_levels = 'a', tag_prefix = "(", tag_suffix = ")")
+#ggsave(here("figures_ms", "fig4.png"), plot = fig4, width = 18, height = 12, dpi = 600)
 
-#ggsave("figures_ms/fig4.png", plot = fig4, width = 18, height = 12, dpi = 600)
 ```
 
 
@@ -1822,44 +1829,6 @@ knitr::include_graphics((here("figures_ms", "SEM_3.png")))
 ```
 **Figure 16**: Structural equation model (SEM) showing the relationships between stability, asynchrony, population stability, imbalance, and nutrient levels. The model includes standardized regression coefficients and fit indices.
 
-**Model Fit Indices**
-The model fit indices suggest that the model fits the data well.
-
-*Chi-Square Test (User Model)*: The chi-square test statistic for the user model is χ 2 =1.626 (scaled = 1.465) with 3 degrees of freedom and a p-value of 0.475 (scaled = 0.501). This indicates a good fit, as the test is non-significant, suggesting no significant difference between the observed and model-implied covariance matrices.
-
-*Comparative Fit Index (CFI)* and *Tucker-Lewis Index (TLI)*: Both CFI and TLI values are 1.000, indicating an excellent model fit. Values close to or above 0.95 are generally considered good.
-
-*Root Mean Square Error of Approximation (RMSEA)*: The RMSEA is 0.000, with a 90% confidence interval ranging from 0 to 0.090 (scaled = 0.080). This indicates a very good fit, as RMSEA values below 0.05 are ideal, and values below 0.08 are acceptable. The p-values for the RMSEA hypothesis tests suggest strong support for a close fit (RMSEA <= 0.05) and little evidence for a poor fit (RMSEA >= 0.08).
-
-*Standardized Root Mean Square Residual (SRMR)*: The SRMR value is 0.017, which is also within the acceptable range (values below 0.08 are generally considered good).
-Overall, the fit indices suggest that the model is an excellent fit for the data.
-
-**Regression Paths and Interpretation**
-
-**Stability Regressions**
-
-*Stability ~ Asynchrony_Gross (asynchrny_Grss)*: The standardized estimate for the effect of asynchrony on stability is 0.340 (p < 0.001), indicating a significant positive association. Higher asynchrony in species dynamics is associated with increased community stability.
-
-*Stability ~ Population Stability (pop_stability)*: The standardized estimate is 0.977 (p < 0.001), showing a strong positive relationship. This suggests that community stability is highly dependent on the stability of individual populations within the community.
-
-**Asynchrony_Gross Regressions**
-
-*Asynchrony_Gross ~ Log10(Balance):* The standardized estimate is -0.176 (p = 0.013), indicating a significant negative effect. Higher imbalance leads to lower asynchrony, suggesting that as imbalance increases, species within the community fluctuate more synchronously.
-
-*Asynchrony_Gross ~ Nutrients:* The standardized estimate is -0.469 (p < 0.001), showing a strong negative relationship. Higher nutrient levels appear to reduce asynchrony, possibly by causing similar responses across species.
-
-**Population Stability Regressions**
-
-*Population Stability ~ Log10(Balance)*: The standardized estimate is -0.296 (p < 0.001), indicating that higher imbalance is associated with lower population stability.
-
-*Population Stability ~ Nutrients*: The standardized estimate is 0.635 (p < 0.001), showing that higher nutrient levels are associated with increased population stability, likely because nutrients enhance conditions that support stable population dynamics.
-
-**Variances and R-Squared Values**
-*R-Squared for Stability*: The model explains 90.4% of the variance in community stability, indicating strong predictive power.
-
-*R-Squared for Asynchrony_Gross*: The model explains 21.9% of the variance in asynchrony, which is moderate.
-
-*R-Squared for Population Stability*: The model explains 56.2% of the variance in population stability, showing that nutrients and balance are important but not the only factors influencing it.
 
 *Summary Interpretation*
 Model Fit: The model has an excellent fit, as indicated by the fit indices.

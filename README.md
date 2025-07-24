@@ -8,7 +8,6 @@ Additional analyses: contains code and report of analysis with different cutoff 
 
 Code: contains code to reproduce all analyses and results presented in the main text and supplementary information. There are multiple .Rmd files in this folder:
 
-- Analysis_30Days.Rmd: contains the same analysis presented in the main text, but using only the last 30 days of the experiment (excluding biomass peak)
 
 - Interactions_edm.Rmd: Code to preform the EDM analysis used to estimate species interactions coefficients.
 
@@ -19,6 +18,10 @@ Code: contains code to reproduce all analyses and results presented in the main 
 - Supplementary_info3.Rmd: Analysis of the results of the Empirical Dynamic Modelling used to calculate species interactions.
 
 - Symmetry and Magnitude.Rmd: contains an exploratory analysis looking at how magnitude  and symmetry (two dimensions of imbalance) change with species richness and distribution of species responses.
+
+- Window Analysis: window analysis used to investigate if the results are robust across the experiment and presented in the second half of the Supplementary Information document related to the main text
+
+- Temperature Response: Analysis used to check whether species in the community experiment responded as expected from the response surface experiment
 
 Data: Contains the datasets needed to reproduce the analysis.
 

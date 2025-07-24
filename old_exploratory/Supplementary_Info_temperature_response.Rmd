@@ -1,0 +1,808 @@
+---
+title: "Temperature responses: The balance of nature: Critical Role of Species Environmental Responses for Stability"
+author: "Til Hämmig, Francesco Polazzo, Owen L. Petchey, Frank Pennekamp"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    code_folding: hide
+    keep_md: no
+    fig_caption: false  
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+library("ggplot2")
+library("tidyverse")
+library("gridExtra")
+#library(rEDM)
+library("parallel")
+library("pracma")
+library("purrr")
+library("signal")
+library("ggfortify")
+library("data.table")
+library("here")
+library(flextable)
+library(performance)
+library(lavaan)
+library(officer)
+library(gt)
+library(ggbeeswarm)
+library(lmerTest)
+library(codyn)
+library(broom)
+
+#devtools::install_github("canankarakoc/r_package_EDMhelper/EDMhelper")
+
+```
+
+```{r include = FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      include = TRUE,
+                      warning = FALSE,
+                      message = FALSE,
+                      cache = FALSE)
+```
+
+
+
+# Load datasets, Data wrangling and Imbalance calculation
+
+```{r  warning=FALSE, results='hide'}
+
+divergence_df <- read_csv(here("Data", "divergence_df.csv"))
+load(here("Data", "dens_biomass_poly.RData"))
+
+dd_all_pred<-read.csv(here("Data", "morph_dd_pred.csv"))
+dd_all_pred_nonoise<-read.csv(here("Data", "morph_dd_pred_nonoise.csv"))
+
+load(here("Data", "ciliate_traits.Rdata"))
+
+df_slopes <- read_csv(here("Data", "df_slopes_cor.csv"))
+
+# needs to have id_new variable
+ciliate_traits <- ciliate_traits %>%
+  dplyr::mutate(
+    # Remove dots from the date
+    cleaned_date = gsub("\\.", "", date),
+    # Extract the part of id after the underscore
+    id_suffix = sub(".*_(.*)", "\\1", id),
+    # Combine cleaned_date, id_suffix, and species_initial into a new variable
+    id_new = paste0(cleaned_date, id_suffix, composition)
+  ) %>%
+  # Optionally, remove the intermediate columns to clean up
+  dplyr::select(-cleaned_date, -id_suffix,-new_id)
+
+uniqueN(ciliate_traits$id_new)==nrow(ciliate_traits) # all unique  ;)
+
+id_dd<-full_join(dd_all_pred,dplyr::select(ciliate_traits,id_new,biomass),join_by("id_new"))
+
+
+## add day variable
+
+#create a day variable from the date variable
+
+id_dd<-dplyr::mutate(id_dd,date=as.Date(date,format = "%d.%m.%y"))
+
+earliest_date<-min(id_dd$date)
+days_since_earliest<-as.numeric(id_dd$date-earliest_date)+1
+id_dd<-id_dd%>%dplyr::mutate(day=days_since_earliest)
+
+#create a summarised df on microcosm level with each species seperate
+# Make sure, that we have n_frames and not N_frames
+names(id_dd)[names(id_dd) == "N_frames"] <- "n_frames"
+
+#extrapolation_factor <- 9.301902  # for 16 x magnification 
+extrapolation_factor <- 9.828125  # for 25 x magnification 
+video_biomass_species <- c( "C", "P", "S","D","L","T")
+
+biomasses <- id_dd %>%
+  dplyr::group_by( day,temperature,nutrients,sample_ID,composition,predict_spec) %>% # group  by xxx
+  dplyr::summarize(
+    biomass = sum(biomass * n_frames, na.rm = TRUE) / (1 * 125) # if not 3 videos corrections is done below with dens_factor
+  ) %>%
+  dplyr::mutate(
+    biomass = biomass * extrapolation_factor,
+    )
+
+biomasses<-biomasses%>%dplyr::mutate(biomass=biomass*1000)
+
+dd_ts_id<-biomasses
+
+#fill up missing dates with biomass<-0
+
+fill_dd<-expand.grid(sample_ID=unique(dd_ts_id$sample_ID),day=unique(dd_ts_id$day),predict_spec=unique(dd_ts_id$predict_spec))
+complete_ts<-full_join(fill_dd,dd_ts_id,join_by(sample_ID,day,predict_spec))
+#complete_ts<-complete_ts%>%dplyr::filter(day>=10)
+
+complete_ts$biomass[is.na(complete_ts$biomass)]<-0
+complete_ts<-complete_ts%>%dplyr::mutate(composition=sub("_.*", "", sample_ID))
+complete_ts<-complete_ts %>%
+  dplyr::mutate(temperature = sapply(strsplit(as.character(sample_ID), "_"), function(x) paste(x[3], x[4], sep = "-")))
+complete_ts<- dplyr::mutate(complete_ts,nutrients = gsub(".*Nut(.*?)_.*", "\\1", sample_ID))
+
+# Now remove wrong combinations of composition and predict_spec / predict_spec
+
+complete_ts<- complete_ts %>%
+  rowwise() %>%
+  dplyr::filter(predict_spec %in% unlist(strsplit(composition, ""))) %>%
+  ungroup()  
+complete_ts<-dplyr::mutate(complete_ts,temperature=as.character(temperature),
+                    nutrients=as.character(nutrients),
+                    richness=nchar(composition))
+
+complete_ts<-complete_ts%>%group_by(sample_ID,composition,day)%>%dplyr::mutate(tot_biomass=sum(biomass))
+complete_ts<-complete_ts%>%dplyr::mutate(biom_contribution=biomass/tot_biomass)
+
+df_biomass_mod <- complete_ts
+
+complete_ts<-complete_ts%>%dplyr::mutate(temperature=paste0(temperature," °C"),
+                                      nutrients=paste0(nutrients," g/L"))
+
+
+# introduce slopes of 
+names(df_slopes)[names(df_slopes)=="species_initial"]<-"predict_spec"
+
+slope_ts<-full_join(dplyr::select(df_slopes,nutrients,predict_spec,temperature,slope),complete_ts)
+slope_ts<-slope_ts%>%dplyr::mutate(w_slope=biom_contribution*slope,
+                            sign=sign(slope))
+
+slope_ts<-slope_ts%>%group_by(sample_ID,temperature,nutrients,richness,composition,day,tot_biomass)%>%dplyr::summarize(
+  sum_w_slopes=abs(sum(w_slope)),
+                   mean_abs_slope=mean(abs(slope)),
+  sum_abs_slope=sum(abs(slope)),
+  abs_sum_slope=abs(sum(slope)),
+  symmetry=abs(sum(sign)))
+
+
+slope_ts<-slope_ts%>%dplyr::mutate(richness=as.factor(richness))
+
+
+##create new variable where it checks, where the last observation =0 is; with complete_ts
+aggr_ts <- slope_ts %>%
+  group_by( sample_ID) %>%
+  arrange(day) %>%
+  mutate(
+    # Create a flag for non-zero tot_biomass
+    non_zero_biomass = tot_biomass != 0,
+    # Find the last non-zero day
+    last_non_zero_day = ifelse(any(non_zero_biomass), max(day[non_zero_biomass], na.rm = TRUE), NA),
+    # Find the first zero day after the last non-zero day
+    first_zero_day = ifelse(
+      !is.na(last_non_zero_day),
+      min(day[!non_zero_biomass & day > last_non_zero_day], na.rm = TRUE),
+      NA
+    ),
+    # Flag for days after the first zero day
+    is_after_first_zero_day = ifelse(!is.na(first_zero_day), day > first_zero_day, FALSE)
+  ) %>%
+  ungroup()
+
+aggr_ts<-aggr_ts%>%mutate(rep_var=sub("_[^_]+$", "", sample_ID))
+#aggr_ts<-aggr_ts%>%dplyr::filter(day>=10)
+
+### cut of time series when species extinct
+# aggr_ts_no_ext<-aggr_ts%>%dplyr::filter(is_after_first_zero_day==F)
+
+biomass_ts<-aggr_ts%>%dplyr::group_by(day,temperature,nutrients,richness)%>%summarize(tot_biom=(mean(tot_biomass)),se_tot_biom=sd((tot_biomass))/sqrt(as.numeric(length(tot_biomass))))
+
+
+```
+
+
+ 
+## Species responses to temperature
+
+  T0:    Does temperature on sampling day explain biomass?  
+  
+  T1:   Does temperature on the day before sampling day explain biomass? 
+  
+  T2:   Does average temperature over the two days before sampling day explain biomass? 
+  
+  T3:   Does average temperature over the three days before sampling day explain biomass? 
+
+
+
+```{r}
+
+## Create temperature time series patterns
+species_ts<-complete_ts%>%mutate(species_ID=paste(sample_ID,predict_spec,sep="_"))
+
+pattern <- c(18, 18, 18, 19.5, 21, 21, 21, 19.5)
+T1<-rep(pattern, length.out = 60)
+T1_sel<-data.frame(sample_T=T1[unique(species_ts$day)+1],
+                   temp_lag1=dplyr::lag(T1, 1)[unique(species_ts$day)+1],
+                   temp_lag2=dplyr::lag(T1, 2)[unique(species_ts$day)+1],
+                   temp_lag3=dplyr::lag(T1, 3)[unique(species_ts$day)+1],
+                   day=unique(species_ts$day))
+
+
+pattern <- c(22, 22, 22, 23.5, 25, 25, 25, 23.5)
+T2<-rep(pattern, length.out = 60)
+T2_sel<-data.frame(sample_T=T2[unique(species_ts$day)+1],
+                   temp_lag1=dplyr::lag(T2, 1)[unique(species_ts$day)+1],
+                   temp_lag2=dplyr::lag(T2, 2)[unique(species_ts$day)+1],
+                   temp_lag3=dplyr::lag(T2, 3)[unique(species_ts$day)+1],
+                   day=unique(species_ts$day))
+
+pattern <- c(25, 25, 25, 26.5, 28, 28, 28, 26.5)
+T3<-rep(pattern, length.out = 60)
+T3_sel<-data.frame(sample_T=T3[unique(species_ts$day)+1],
+                   temp_lag1=dplyr::lag(T3, 1)[unique(species_ts$day)+1],
+                   temp_lag2=dplyr::lag(T3, 2)[unique(species_ts$day)+1],
+                   temp_lag3=dplyr::lag(T3, 3)[unique(species_ts$day)+1],
+                   day=unique(species_ts$day))
+
+
+## Note that total time series goes from sampling day 1 (second day of the experiment) until the 59th day (here 58)-> 1:58
+
+library(dplyr)
+library(slider) # for sliding window operations
+
+# Create the temperature time series for each regime
+
+
+# Get unique days (+1 if needed)
+days <- unique(species_ts$day)+1 
+
+# Helper function to compute sliding means
+get_temp_summary <- function(temp_vector, days) {
+  tibble(
+    day = days-1 ,  # shift back to match original day indexing
+    mean_T_lag1 = sapply(days, function(d) if (d >= 2) mean(temp_vector[(d-1)]) else NA)%>%unlist,
+    mean_T_lag2 = sapply(days, function(d) if (d >= 3) mean(temp_vector[(d-2):(d-1)]) else NA)%>%unlist,
+    mean_T_lag3 = sapply(days, function(d) if (d >= 4) mean(temp_vector[(d-3):(d-2)]) else NA)%>%unlist
+  )
+}
+
+# Generate summary tables
+T1_mean_lag <- get_temp_summary(T1, days)
+T2_mean_lag <- get_temp_summary(T2, days)
+T3_mean_lag <- get_temp_summary(T3, days)
+
+
+T1_sel<-full_join(T1_sel,T1_mean_lag)
+T2_sel<-full_join(T2_sel,T2_mean_lag)
+T3_sel<-full_join(T3_sel,T3_mean_lag)
+
+
+
+df_S<-split(species_ts,species_ts$species_ID)
+df_S<-mclapply(df_S,function(df){
+  if(unique(df$temperature)=="18-21 °C"){
+    dfT<-T1_sel
+  }
+  else if(unique(df$temperature)=="22-25 °C"){
+    dfT<-T2_sel
+  }
+  else{dfT<-T3_sel 
+  }
+  
+  # dfT <- dfT %>%arrange(day)%>%
+  # mutate(temp_lag1 = dplyr::lag(T1, 1),
+  #        temp_lag2 = dplyr::lag(sample_T, 2))
+  
+   dfT<-full_join(dfT,df)
+   
+   dfT<-dfT %>%
+  group_by( species_ID) %>%
+  arrange(day) %>%
+  mutate(
+    # Create a flag for non-zero tot_biomass
+    non_zero_biomass = biomass != 0,
+    # Find the last non-zero day
+    last_non_zero_day = ifelse(any(non_zero_biomass), max(day[non_zero_biomass], na.rm = TRUE), NA),
+    # Find the first zero day after the last non-zero day
+    first_zero_day = ifelse(
+      !is.na(last_non_zero_day),
+      min(day[!non_zero_biomass & day > last_non_zero_day], na.rm = TRUE),
+      NA
+    ),
+    # Flag for days after the first zero day
+    is_after_first_zero_day = ifelse(!is.na(first_zero_day), day > first_zero_day, FALSE)
+  ) %>%
+  ungroup()
+  
+   
+  
+  })
+   df_T<-do.call("rbind",df_S)
+
+   
+
+
+
+list_reg<-lapply(df_S,function(s){
+  # Filter data
+  s_filtered <- s %>% dplyr::filter(is_after_first_zero_day == F)
+  
+
+  
+  # Skip if not enough data to fit model
+  if (nrow(s_filtered) < 3) {
+    return(NULL)
+  }
+
+  # Fit models
+  lm0 <- lm((biomass) ~ sample_T, data = s_filtered)
+  lm1 <- lm((biomass) ~ mean_T_lag1, data = s_filtered)
+  lm2 <- lm((biomass) ~ mean_T_lag2, data = s_filtered)
+  lm3 <- lm((biomass) ~ mean_T_lag3, data = s_filtered)
+ 
+  # Get species responses
+  slope_select<-df_slopes%>%dplyr::filter(nutrients==unique(s$nutrients),temperature==unique(s$temperature),predict_spec==unique(s$predict_spec))
+  
+  # Get rest_biomass
+
+
+ 
+  
+  data.frame(
+    species_ID = unique(s$species_ID),
+    coef_sample_T = coef(lm0)[["sample_T"]],
+    coef_temp_lag1 = coef(lm1)[["mean_T_lag1"]],
+    coef_temp_lag2 = coef(lm2)[["mean_T_lag2"]],
+    coef_temp_lag3 = coef(lm3)[["mean_T_lag3"]],
+    slope=(slope_select$slope),
+    temperature=unique(s$temperature),
+    nutrients=unique(s$nutrients),
+    predict_spec=unique(s$predict_spec),
+    mean_biom_cont=mean(s_filtered$biom_contribution,na.rm=T),
+    richness=nchar(unique(s_filtered$composition)),
+    last_non_zero_day=unique(s$last_non_zero_day)
+    )
+  
+})
+
+df_reg<-do.call(rbind,list_reg)
+
+
+
+temp_lags <- c("coef_sample_T", "coef_temp_lag1", "coef_temp_lag2", "coef_temp_lag3")
+
+# Apply cor.test for each temp lag and tidy the results
+cor_summary <- map_dfr(temp_lags, function(var) {
+
+  result <- cor.test(df_reg$slope, df_reg[[var]])
+  broom::tidy(result) %>%
+    mutate(temp_lag = var) %>%
+    select(temp_lag, estimate, conf.low, conf.high, p.value)%>%
+    mutate(
+    temp_lag = case_when(
+      temp_lag == "coef_sample_T" ~ "T0",
+      temp_lag == "coef_temp_lag1" ~ "T1",
+      temp_lag == "coef_temp_lag2"  ~"T2",
+      temp_lag == "coef_temp_lag3" ~ "T3",
+      TRUE ~ NA_character_))
+})
+
+
+plot_overal_cor<-ggplot(data = cor_summary ,
+       aes(x = temp_lag%>%as.factor, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+
+  geom_hline(yintercept=0,linetype="dashed")+
+  theme_bw() +
+  scale_x_discrete(labels = function(x) parse(text = x)) +
+  labs( x = "Temperature variable",y="Correlation")
+
+
+
+
+df_reg_long <- df_reg %>%
+  pivot_longer(
+    cols = starts_with("coef_"),
+    names_to = "temp_lag",
+    values_to = "coef_value"
+  )%>%mutate(
+    temp_lag = case_when(
+      temp_lag == "coef_sample_T" ~ "T0",
+      temp_lag == "coef_temp_lag1" ~ "T1",
+      temp_lag == "coef_temp_lag2"  ~"T2",
+      temp_lag == "coef_temp_lag3" ~ "T3",
+      TRUE ~ NA_character_))
+
+
+
+
+
+
+```
+
+
+
+## Overall correlation
+
+
+```{r}
+df_reg_long <- df_reg %>%
+  pivot_longer(
+    cols = starts_with("coef_"),
+    names_to = "temp_lag",
+    values_to = "coef_value"
+  )%>%mutate(
+    temp_lag = case_when(
+      temp_lag == "coef_sample_T" ~ "T0",
+      temp_lag == "coef_temp_lag1" ~ "T1",
+      temp_lag == "coef_temp_lag2" ~ "T2",
+      temp_lag == "coef_temp_lag3" ~ "T3",
+      TRUE ~ NA_character_))
+
+
+
+
+# Plot with custom facet titles
+plot_cor_reg_slope <- ggplot(data = df_reg_long, aes(x = slope, y = coef_value)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~temp_lag, nrow = 1) +
+  theme_bw()+
+  labs(y="Regression coefficient: biomass ~ temperature",x = "Response from monoculture (slope)")
+```
+
+
+
+```{r overal reg_plot, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=10}
+plot_cor_reg_slope
+```
+
+
+
+**Figure 1**: Relationship between species' responses to temperature from monoculture and from the community experiment. The positive relationship is evidence that species were responding to the fluctuating temperature regime in the community experiment. 
+
+```{r overal cor_plot, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=10}
+plot_overal_cor
+```
+
+
+
+**Figure 2**: Correlation between regression coefficients (biomass~temperature) from the community experiment and from monoculture responses (slope). Positive correlations indicate that species in polyculture were responding according to the responses estimated from the monocultre experiment. 
+
+
+
+## Species level
+
+```{r species cor_table, results='asis', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=10}
+# Prepare correlation results
+cor_table <- df_reg %>%
+  pivot_longer(cols = starts_with("coef_"), names_to = "coef_var", values_to = "coef_val") %>%
+  group_by(predict_spec, coef_var) %>%
+  summarise(cor_res = list(cor.test(slope, coef_val) %>% tidy(conf.int = TRUE)), .groups = "drop") %>%
+  unnest(cor_res) %>%
+  select(predict_spec, coef_var, estimate, conf.low, conf.high, p.value) %>%
+  mutate(
+    estimate = round(estimate, 3),
+    conf.low = round(conf.low, 3),
+    conf.high = round(conf.high, 3),
+    p.value = signif(p.value, 2),
+    `95% CI` = paste0("[", conf.low, ", ", conf.high, "]")
+  ) %>%
+  select(predict_spec, coef_var, estimate, `95% CI`, p.value) %>%
+  arrange(predict_spec, coef_var)%>%mutate(
+    coef_var = case_when(
+      coef_var == "coef_sample_T" ~ "T0",
+      coef_var == "coef_temp_lag1" ~ "T1",
+      coef_var == "coef_temp_lag2" ~ "T2",
+      coef_var == "coef_temp_lag3" ~ "T3",
+      TRUE ~ NA_character_))
+
+# Create a formatted gt table
+cor_table %>%
+  gt() %>%
+  tab_header(
+    title = "Correlation between Slope and Temperature Coefficients"
+  ) %>%
+  cols_label(
+    predict_spec = "Species",
+    coef_var = "Time lag",
+    estimate = "Correlation (r)",
+    `95% CI` = "95% Confidence Interval",
+    p.value = "p-value"
+  ) %>%
+  fmt_markdown(columns = everything())
+```
+**Table 1**: Species level correlation between regression coefficients (biomass~temperature) from the community experiment and from monoculture responses (slope)
+
+
+
+```{r species cor_plot, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=10}
+
+cor_results <- df_reg %>%
+  pivot_longer(cols = starts_with("coef_"), 
+               names_to = "coef_var", values_to = "coef_val") %>%
+  group_by(predict_spec, coef_var) %>%
+  summarise(
+    cor_res = list(cor.test(slope, coef_val) %>% tidy(conf.int = TRUE)),
+    .groups = "drop"
+  ) %>%
+  unnest(cor_res) %>%
+  dplyr::select(predict_spec, coef_var, estimate, conf.low, conf.high, p.value)%>%mutate(
+    coef_var = case_when(
+      coef_var == "coef_sample_T" ~ "T0",
+      coef_var == "coef_temp_lag1" ~ "T1",
+      coef_var == "coef_temp_lag2" ~ "T2",
+      coef_var == "coef_temp_lag3" ~ "T3",
+      TRUE ~ NA_character_))
+
+
+ggplot(cor_results, aes(x = coef_var, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_wrap(~ predict_spec,scale="free") +
+  theme_bw() +
+  labs(
+    x = "Temperature variable",
+    y = "Correlation"
+  ) 
+
+
+```
+**Figure 3**: Species level correlation between regression coefficients (biomass~temperature) from the community experiment and from monoculture responses (slope).
+
+
+
+## Window analysis
+```{r}
+
+
+# Assume your data frame is called df and has a column named 'day'
+unique_days <- sort(unique(df_T$day))
+window_size <- 13
+n_windows <- length(unique_days) - window_size + 1
+
+# Create list of data frames using sliding window
+window_list <- lapply(1:n_windows, function(i) {
+  days_window <- unique_days[i:(i + window_size - 1)]
+  window_df<-df_T[df_T$day %in% days_window, ]
+  window_df%>%mutate(window=unique_days[i])
+})
+
+
+
+
+window_temp_list<-lapply(window_list,function(w){
+  
+  df_S<-split(w,w$species_ID)
+  
+  list_reg<-lapply(df_S,function(s){
+    # Filter data
+    s_filtered <- s %>% dplyr::filter(is_after_first_zero_day == F)
+    
+  
+    
+    # Skip if not enough data to fit model
+    if (nrow(s_filtered) < 3) {
+      return(NULL)
+    }
+  
+    # Fit models
+    lm0 <- lm((biomass) ~ sample_T, data = s_filtered)
+    lm1 <- lm((biomass) ~ mean_T_lag1, data = s_filtered)
+    lm2 <- lm((biomass) ~ mean_T_lag2, data = s_filtered)
+    lm3 <- lm((biomass) ~ mean_T_lag3, data = s_filtered)
+   
+    # Get species responses
+    slope_select<-df_slopes%>%dplyr::filter(nutrients==unique(s$nutrients),temperature==unique(s$temperature),predict_spec==unique(s$predict_spec))
+    
+    # Get rest_biomass
+  
+  
+   
+    
+    data.frame(
+      species_ID = unique(s$species_ID),
+       coef_sample_T = coef(lm0)[["sample_T"]],
+    coef_temp_lag1 = coef(lm1)[["mean_T_lag1"]],
+    coef_temp_lag2 = coef(lm2)[["mean_T_lag2"]],
+    coef_temp_lag3 = coef(lm3)[["mean_T_lag3"]],
+      slope=(slope_select$slope),
+      temperature=unique(s$temperature),
+      nutrients=unique(s$nutrients),
+      predict_spec=unique(s$predict_spec),
+      richness=nchar(unique(s_filtered$composition)),
+      last_non_zero_day=unique(s$last_non_zero_day),
+      window=unique(w$window)
+      )
+    
+  })
+  df_reg<-do.call(rbind,list_reg)
+
+})
+
+window_temp_reg<-do.call(rbind,window_temp_list)
+
+
+
+
+window_temp_reg <- window_temp_reg %>%
+  pivot_longer(
+    cols = starts_with("coef_"),
+    names_to = "temp_lag",
+    values_to = "coef_value"
+  )%>%mutate(
+    temp_lag = case_when(
+      temp_lag == "coef_sample_T" ~ "T0",
+      temp_lag == "coef_temp_lag1" ~ "T1",
+      temp_lag == "coef_temp_lag2" ~ "T2",
+      temp_lag == "coef_temp_lag3" ~ "T3",
+      TRUE ~ NA_character_))
+  
+window_temp_reg<-window_temp_reg%>%dplyr::filter(temp_lag=="T1")
+
+
+window_temp_list<-split(window_temp_reg,window_temp_reg$window)
+
+list_window_cor<-lapply(window_temp_list,function(w){
+   result <- cor.test(w$slope, w$coef_value)
+   broom::tidy(result) %>%mutate(window=unique(w$window))%>%
+    select(window, estimate, conf.low, conf.high, p.value)
+  
+})
+
+df_cor_window<-do.call(rbind,list_window_cor)
+
+  
+plot_overal_cor<-ggplot(data = df_cor_window ,
+       aes(x = window%>%as.factor, y = estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2) +
+
+  geom_hline(yintercept=0,linetype="dashed")+
+  theme_bw() +
+  labs( x = "Start window (day)",y="Correlation")
+
+
+# Plot with custom facet titles
+plot_cor_window_slope <- ggplot(data = window_temp_reg, aes(x = slope, y = coef_value)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  theme_bw()+
+  labs(y="Regression coefficient: biomass ~ temperature",x = "Response from monoculture (slope)")+
+  facet_wrap(~window)
+
+
+```
+
+
+
+### Plots windows
+
+
+
+```{r window_reg_plot, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=10}
+plot_cor_window_slope
+```
+**Figure 4**: Window analysis: Relationship between regression coefficients (biomass~temperature) from the community experiment and from monoculture responses (slope). Every window contains 13 sampling days with +1 sampling day displacement between windows. 
+
+
+
+```{r window_cor_plot, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=10}
+plot_overal_cor
+```
+**Figure 5**: Window analysis on temperature lag = -1 day: Correlation  between regression coefficients (biomass~temperature) from the community experiment and from monoculture responses (slope). Every window contains 13 sampling days with +1 sampling day displacement between windows. 
+
+We can see that after the first two windows, the positive relationship disappears, suggesting that species dynamics are no longer (or only weakly) governed by temperature fluctuations. This observation is in accordance with the window analysis on the effect of imbalance on asynchrony, where we also observe a rapid decline of the relationship after the first two windows. 
+
+But why then is the direct effect of imbalance on community stability robust?
+
+```{r}
+ggplot(data=df_T,aes(x=slope,y=last_non_zero_day))+
+  geom_boxplot()
+
+
+# Assume your data frame is called df and has a column named 'day'
+unique_days <- sort(unique(df_T$day))
+window_size <- 13
+n_windows <- length(unique_days) - window_size + 1
+
+# Create list of data frames using sliding window
+window_list <- lapply(1:n_windows, function(i) {
+  days_window <- unique_days[i:(i + window_size - 1)]
+  window_df<-df_T[df_T$day %in% days_window, ]
+  window_df%>%mutate(window=unique_days[i])
+})
+
+window_acf<-lapply(window_list,function(w){
+  
+  df_S<-split(w,w$species_ID)
+  
+  list_reg<-lapply(df_S,function(s){
+    # Filter data
+    s_filtered <- s#%>% dplyr::filter(is_after_first_zero_day == F)
+    
+  
+ acf_result <- acf(s_filtered$biomass, plot = FALSE)
+  slope_select<-df_slopes%>%dplyr::filter(nutrients==unique(s$nutrients),temperature==unique(s$temperature),predict_spec==unique(s$predict_spec))
+   
+    
+    data.frame(
+      species_ID = unique(s$species_ID),
+      lag1_acf = acf_result$acf[2],
+      
+      slope=(slope_select$slope),
+      temperature=unique(s$temperature),
+      nutrients=unique(s$nutrients),
+      predict_spec=unique(s$predict_spec),
+      richness=nchar(unique(s_filtered$composition)),
+      last_non_zero_day=unique(s$last_non_zero_day),
+      window=unique(w$window),
+      mean_biomass=mean(s_filtered$biomass),
+      sd_biomass=sd(s_filtered$biomass),
+      sample_ID=unique(s_filtered$sample_ID)
+      )
+    
+  })
+  df_reg<-do.call(rbind,list_reg)
+  df_reg<-df_reg%>%group_by(sample_ID)%>%
+  mutate(imbalance=abs(sum(slope)))
+  
+  
+})
+
+
+
+acf_df<-do.call(rbind,window_acf)
+
+auto_cor<-acf_df%>%group_by(window,predict_spec)%>%
+  summarise(estimate=t.test(lag1_acf)$estimate,
+            upper_ci=t.test(lag1_acf)$conf.int[2],
+            lower_ci=t.test(lag1_acf)$conf.int[1],
+            mean_biomass=mean(mean_biomass))
+
+
+
+
+plot_auto_cor <- ggplot(data = auto_cor, aes(x = as.factor(window), y = (estimate))) +
+  geom_point() +
+  geom_errorbar(aes(ymax = upper_ci, ymin = lower_ci), width = 0.2) +
+
+
+  theme_bw()+
+  labs(y="autocorrelation with lag = -1",x = "window")+
+  facet_wrap(~predict_spec)
+
+
+plot_mean_biom_auto<- ggplot(data = acf_df, aes(x = (mean_biomass), y = lag1_acf) )+
+  geom_point() +
+  geom_smooth(method="lm")+
+  theme_bw()+
+  labs(y="Autocorrelation with lag = -1",x = "Mean biomass ")+
+  facet_wrap(~predict_spec)
+
+plot_mean_biom_auto
+
+plot_mean_biom_auto<- ggplot(data = acf_df, aes(y = log(mean_biomass/sd_biomass), x = log(abs(slope))) )+
+  geom_point() +
+  geom_smooth(method="lm")+
+  theme_bw()+
+  labs(y="1/CV",x = "log(abs(slope))")+
+  facet_wrap(~window)
+
+plot_mean_biom_auto
+
+
+```
+
+```{r auto_cor1, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=5, fig.width=10}
+plot_auto_cor
+
+```
+
+
+
+
+
+
+
+
+```
+
