@@ -1,0 +1,786 @@
+---
+title: "Supplementary Window analysis: The balance of nature: Critical Role of Species Environmental Responses for Stability"
+author: "Til Hämmig, Francesco Polazzo, Owen L. Petchey, Frank Pennekamp"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  bookdown::html_document2:
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    code_folding: hide
+    keep_md: no
+    fig_caption: false  
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+library("ggplot2")
+library("tidyverse")
+library("gridExtra")
+#library(rEDM)
+library("parallel")
+library("pracma")
+library("purrr")
+library("signal")
+library("ggfortify")
+library("data.table")
+library("here")
+library(flextable)
+library(performance)
+library(lavaan)
+library(officer)
+library(gt)
+library(ggbeeswarm)
+library(lmerTest)
+library(codyn)
+library(patchwork)
+
+#devtools::install_github("canankarakoc/r_package_EDMhelper/EDMhelper")
+
+```
+
+```{r include = FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE,
+                      include = TRUE,
+                      warning = FALSE,
+                      message = FALSE,
+                      cache = FALSE)
+```
+
+
+# Load datasets, Data wrangling and Imbalance calculation
+
+```{r  warning=FALSE, results='hide'}
+
+divergence_df <- read_csv(here("Data", "divergence_df.csv"))
+load(here("Data", "dens_biomass_poly.RData"))
+
+dd_all_pred<-read.csv(here("Data", "morph_dd_pred.csv"))
+dd_all_pred_nonoise<-read.csv(here("Data", "morph_dd_pred_nonoise.csv"))
+
+load(here("Data", "ciliate_traits.Rdata"))
+
+df_slopes <- read_csv(here("Data", "df_slopes_cor.csv"))
+
+# needs to have id_new variable
+ciliate_traits <- ciliate_traits %>%
+  dplyr::mutate(
+    # Remove dots from the date
+    cleaned_date = gsub("\\.", "", date),
+    # Extract the part of id after the underscore
+    id_suffix = sub(".*_(.*)", "\\1", id),
+    # Combine cleaned_date, id_suffix, and species_initial into a new variable
+    id_new = paste0(cleaned_date, id_suffix, composition)
+  ) %>%
+  # Optionally, remove the intermediate columns to clean up
+  dplyr::select(-cleaned_date, -id_suffix,-new_id)
+
+uniqueN(ciliate_traits$id_new)==nrow(ciliate_traits) # all unique  ;)
+
+id_dd<-full_join(dd_all_pred,dplyr::select(ciliate_traits,id_new,biomass),join_by("id_new"))
+
+
+## add day variable
+
+#create a day variable from the date variable
+
+id_dd<-dplyr::mutate(id_dd,date=as.Date(date,format = "%d.%m.%y"))
+
+earliest_date<-min(id_dd$date)
+days_since_earliest<-as.numeric(id_dd$date-earliest_date)+1
+id_dd<-id_dd%>%dplyr::mutate(day=days_since_earliest)
+
+#create a summarised df on microcosm level with each species seperate
+# Make sure, that we have n_frames and not N_frames
+names(id_dd)[names(id_dd) == "N_frames"] <- "n_frames"
+
+#extrapolation_factor <- 9.301902  # for 16 x magnification 
+extrapolation_factor <- 9.828125  # for 25 x magnification 
+video_biomass_species <- c( "C", "P", "S","D","L","T")
+
+biomasses <- id_dd %>%
+  dplyr::group_by( day,temperature,nutrients,sample_ID,composition,predict_spec) %>% # group  by xxx
+  dplyr::summarize(
+    biomass = sum(biomass * n_frames, na.rm = TRUE) / (1 * 125) # if not 3 videos corrections is done below with dens_factor
+  ) %>%
+  dplyr::mutate(
+    biomass = biomass * extrapolation_factor,
+    )
+
+biomasses<-biomasses%>%dplyr::mutate(biomass=biomass*1000)
+
+dd_ts_id<-biomasses
+
+#fill up missing dates with biomass<-0
+
+fill_dd<-expand.grid(sample_ID=unique(dd_ts_id$sample_ID),day=unique(dd_ts_id$day),predict_spec=unique(dd_ts_id$predict_spec))
+complete_ts<-full_join(fill_dd,dd_ts_id,join_by(sample_ID,day,predict_spec))
+#complete_ts<-complete_ts%>%dplyr::filter(day>=10)
+
+complete_ts$biomass[is.na(complete_ts$biomass)]<-0
+complete_ts<-complete_ts%>%dplyr::mutate(composition=sub("_.*", "", sample_ID))
+complete_ts<-complete_ts %>%
+  dplyr::mutate(temperature = sapply(strsplit(as.character(sample_ID), "_"), function(x) paste(x[3], x[4], sep = "-")))
+complete_ts<- dplyr::mutate(complete_ts,nutrients = gsub(".*Nut(.*?)_.*", "\\1", sample_ID))
+
+# Now remove wrong combinations of composition and predict_spec / predict_spec
+
+complete_ts<- complete_ts %>%
+  rowwise() %>%
+  dplyr::filter(predict_spec %in% unlist(strsplit(composition, ""))) %>%
+  ungroup()  
+complete_ts<-dplyr::mutate(complete_ts,temperature=as.character(temperature),
+                    nutrients=as.character(nutrients),
+                    richness=nchar(composition))
+
+complete_ts<-complete_ts%>%group_by(sample_ID,composition,day)%>%dplyr::mutate(tot_biomass=sum(biomass))
+complete_ts<-complete_ts%>%dplyr::mutate(biom_contribution=biomass/tot_biomass)
+
+df_biomass_mod <- complete_ts
+
+complete_ts<-complete_ts%>%dplyr::mutate(temperature=paste0(temperature," °C"),
+                                      nutrients=paste0(nutrients," g/L"))
+
+
+```
+
+
+# Detrending
+```{r}
+library(mgcv)
+
+detrend_ts<-complete_ts%>%dplyr::filter(day>4)
+  
+
+
+# 1. Create unique species_ID
+df_species_ID <- detrend_ts %>% 
+  mutate(species_ID = paste(sample_ID, predict_spec, sep = "_"))
+
+# 2. Summarize how many zeros per species_ID
+filtered_df <- df_species_ID %>%
+  group_by(species_ID, sample_ID, predict_spec) %>%  # include predict_spec so we can count species later
+  summarize(number_0 = sum(biomass == 0), .groups = "drop")
+
+# 3. Keep species_IDs with number_0 <= 12
+
+  filtered_df <- filtered_df %>%
+  dplyr::filter(number_0 < 26-3)
+
+
+
+# 4. Count how many remaining species per sample_ID
+valid_samples <- filtered_df %>%
+  group_by(sample_ID) %>%
+  dplyr::filter(n() >= 2) %>%  # keep sample_IDs with >=2 species left
+  pull(sample_ID) %>% 
+  unique()
+
+# 5. Filter original df to keep only valid sample_IDs
+df_species_ID_filtered <- df_species_ID %>%
+  dplyr::filter(sample_ID %in% valid_samples,species_ID%in%filtered_df$species_ID)
+
+
+
+detrend_ts <- df_species_ID_filtered %>% 
+  group_by(species_ID) %>%
+  group_modify(~ {
+    gam_model <- gam(biomass ~ s(day), data = .x)
+    .x$detrended_biomass <- residuals(gam_model)
+    .x$trend_biomass <- predict(gam_model)
+    return(.x)
+  }) %>%
+  ungroup()
+
+
+detrend_ts <- detrend_ts %>% 
+  group_by(sample_ID) %>%
+  group_modify(~ {
+    gam_model <- gam(tot_biomass ~ s(day), data = .x)
+    .x$detrended_tot <- residuals(gam_model)
+    .x$trend_tot <- predict(gam_model)
+    return(.x)
+  }) %>%
+  ungroup()
+
+
+
+```
+
+## Plot detrended ts
+```{r detrend_ts, results='hide', echo=FALSE, warning=FALSE, fig.align="center", fig.height=50, fig.width=17}
+ggplot(data=detrend_ts,aes(y=trend_biomass,x=day,color=predict_spec))+
+geom_smooth()+
+  facet_wrap(~sample_ID,ncol=7)
+```
+# Analysis
+
+
+```{r}
+
+
+
+ 
+
+
+
+names(df_slopes)[names(df_slopes)=="species_initial"]<-"predict_spec"
+
+slope_ts<-full_join(dplyr::select(df_slopes,nutrients,predict_spec,temperature,slope),detrend_ts)
+slope_ts<-slope_ts%>%dplyr::mutate(w_slope=biom_contribution*slope,
+                            sign=sign(slope))
+
+slope_ts<-slope_ts%>%group_by(sample_ID,temperature,nutrients,richness,composition,day,tot_biomass,detrended_tot)%>%dplyr::summarize(
+  sum_w_slopes=abs(sum(w_slope)),
+                   mean_abs_slope=mean(abs(slope)),
+  sum_abs_slope=sum(abs(slope)),
+  abs_sum_slope=abs(mean(slope)),
+  symmetry=abs(sum(sign)))%>%ungroup()
+
+
+  aggr_ts <- slope_ts %>%
+  group_by( sample_ID) %>%
+  arrange(day) %>%
+  mutate(
+    # Create a flag for non-zero tot_biomass
+    non_zero_biomass = tot_biomass != 0,
+    # Find the last non-zero day
+    last_non_zero_day = ifelse(any(non_zero_biomass), max(day[non_zero_biomass], na.rm = TRUE), NA),
+    # Find the first zero day after the last non-zero day
+    first_zero_day = ifelse(
+      !is.na(last_non_zero_day),
+      min(day[!non_zero_biomass & day > last_non_zero_day], na.rm = TRUE),
+      NA
+    ),
+    # Flag for days after the first zero day
+    is_after_first_zero_day = ifelse(!is.na(first_zero_day), day > first_zero_day, FALSE)
+  ) %>%
+  ungroup()
+
+aggr_ts<-aggr_ts%>%mutate(rep_var=sub("_[^_]+$", "", sample_ID))
+
+
+##### Get recalculated balance: check which species are left after 30 days
+
+
+
+
+
+
+
+  complete_aggr<-aggr_ts%>%group_by(composition,nutrients,temperature,sample_ID)%>%reframe(
+  avg_w_sumslopes=mean(sum_w_slopes,na.rm = T),
+  abs_sum_slope=mean(abs_sum_slope),
+  magnitude=mean(mean_abs_slope),
+  symmetry=mean(symmetry),
+  sum_abs_slope=mean(sum_abs_slope),
+  CV=sd(tot_biomass)/(mean(tot_biomass)),
+  CV_detrend=sd(detrended_tot)/(mean(tot_biomass)),
+  sd_tot=sd(tot_biomass),
+  mean_biomass=(mean(tot_biomass)),
+  first_zero_day=unique(first_zero_day))
+
+complete_aggr<-right_join(divergence_df,complete_aggr,by=join_by(composition,nutrients,temperature))%>%
+  mutate(richness=as.factor(richness))
+
+complete_aggr <- complete_aggr %>% mutate(stability = 1/CV) %>%
+  dplyr::rename(balance_f = abs_sum_slope,
+                balance_r = avg_w_sumslopes)
+
+
+
+
+complete_aggr_2<- complete_aggr %>%
+  # Remove the units from the 'nutrients' and 'temperature' columns
+  mutate(
+    nutrients = as.numeric(gsub(" g/L", "", nutrients)),  # Convert nutrients to numeric
+    temperature = gsub(" °C", "", temperature)            # Remove the unit but keep as character
+  ) %>%
+  # Convert temperature ranges to numeric codes using case_when
+  mutate(
+    temperature = case_when(
+      temperature == "18-21" ~ 1,
+      temperature == "22-25" ~ 2,
+      temperature == "25-28" ~ 3# Handle unexpected values with NA
+    )
+  )
+
+
+
+lm_temp_resid<-lm(data=complete_aggr_2, temperature ~ log10(balance_f))
+
+lm_nut_resid<-lm(data=complete_aggr_2, nutrients ~ log10(balance_f))
+
+resid_temp<-lm_temp_resid$residuals
+
+resid_nut<-lm_nut_resid$residuals
+complete_aggr_2<-complete_aggr_2%>%mutate(resid_temp=resid_temp,resid_nut=resid_nut)
+
+
+complete_aggr_2<-complete_aggr_2%>%mutate(resid_temp=resid_temp,resid_nut=resid_nut)
+
+### Get asynchrony measures
+
+async_df <- detrend_ts
+
+
+async_Gross <- async_df %>% group_by(composition,sample_ID) %>%
+  do(synchrony_Gross = synchrony(., "day", "predict_spec",
+                              "detrended_biomass", metric = "Gross")
+         
+         )
+async_Gross<-dplyr::mutate(async_Gross,synchrony_Gross=synchrony_Gross%>%unlist())
+async_aggr<-left_join(complete_aggr_2,async_Gross,join_by(sample_ID,composition))
+
+
+async_Loreau <- async_df %>% group_by(composition,sample_ID) %>%
+  do(synchrony_Loreau = synchrony(., "day", "predict_spec",
+                              "detrended_biomass", metric = "Loreau"))
+async_Loreau<-dplyr::mutate(async_Loreau,synchrony_Loreau=synchrony_Loreau%>%unlist())
+
+async_aggr<-full_join(async_aggr,async_Loreau,join_by(sample_ID,composition))
+
+
+
+
+
+pop_aggr<-detrend_ts%>%group_by(sample_ID,predict_spec)%>%summarize(pop_CV=sd(detrended_biomass)/mean(biomass),mean_biom_contribution=mean(biom_contribution,na.rm=T), pop_V= sd(detrended_biomass))
+
+# Lehman & Tilman (2000), THIBAUT & Connolli (2013), Gross et al. (2014)
+
+pop_aggr<-pop_aggr%>%group_by(sample_ID)%>%summarize(sum_sd_squared=mean((sum(pop_V))^2),
+                                                     w_pop_CV=sum(pop_CV*mean_biom_contribution, na.rm=T))
+
+
+pop_aggr<-pop_aggr%>%group_by(sample_ID)%>%left_join(async_aggr,pop_aggr,by="sample_ID")
+
+
+
+#pop_aggr<-pop_aggr%>%mutate(window=unique(w$window))
+
+
+ 
+
+
+even_aggr<-detrend_ts%>%group_by(sample_ID,predict_spec,richness)%>%summarize(mean_biom_contribution=mean(biom_contribution,na.rm=T))%>%ungroup()
+ 
+ 
+# exclude microcosms where all but one species 
+#even_aggr<-even_aggr%>%dplyr::filter(!(mean_biom_contribution%in%c(0,1)))
+ 
+even_aggr<-even_aggr%>%group_by(sample_ID,richness)%>%reframe(H= -sum(mean_biom_contribution*log(mean_biom_contribution)))
+even_aggr<-even_aggr%>%mutate(evenness=H/log(as.numeric(richness)),
+                              richness=as.factor(richness))
+ 
+even_aggr<-full_join(even_aggr,pop_aggr)
+
+
+
+   model <- lm( -synchrony_Gross ~log10(balance_f)+nutrients, data = even_aggr)
+        ci <- confint(model)["log10(balance_f)", , drop = FALSE]
+        ci_df <- as.data.frame(ci)
+        names(ci_df) <- c("ci_lower", "ci_upper")
+
+        frame <- data.frame(
+          estimate = coef(model)[["log10(balance_f)"]],ci_df,df_resid=model$df.residual,
+          r_squared = summary(model)$r.squared,
+          n_obs = nobs(model)
+        )
+summary(model)
+
+
+
+  sem_aggr3 <- even_aggr %>% ungroup%>% # Ensure there is no grouping
+  mutate(
+    log_balance_f = log10(balance_f),
+    log_balance_r = log10(balance_r),
+    stability = log10(1 / CV),
+    stab_detrend = log10(1/CV_detrend),
+    temperature=(temperature),
+    asynchrony_Gross= (-synchrony_Gross),
+    asynchrony_Loreau= (-synchrony_Loreau),
+    pop_stability= log10(1/w_pop_CV),
+    mean_biomass = mean_biomass,
+    richness=as.numeric(richness),
+    interaction=(-synchrony_Gross)*pop_stability
+    #Keep it as an ordered factor
+  )
+
+  #sem_aggr3<-sem_aggr3%>%dplyr::filter(richness==1)
+
+model1C <- '
+  stab_detrend ~ asynchrony_Loreau
+  +pop_stability
+  
+  asynchrony_Loreau ~ log_balance_f + richness 
+  pop_stability~log_balance_f + nutrients+ richness 
+
+
+
+'
+
+
+ # Number of complete observations
+
+
+# Fit the model
+
+fit <- sem(model1C,estimator="MLM",meanstructure = TRUE,data = sem_aggr3)
+
+#modificationindices(fit1C)
+r2_vals <- inspect(fit, "r2")
+
+n_obs_val <- lavInspect(fit, "nobs")
+std_est <- parameterEstimates(fit, standardized = TRUE)
+std_est%>%mutate(window=unique(df$window),fit=fitMeasures(fit, "pvalue"),
+                 R2_asynchrony = r2_vals["asynchrony_Gross"],
+                 R2_pop_stab=r2_vals["pop_stability"],
+                 n_obs = n_obs_val)
+
+summary(fit,rsquare=T)
+
+modificationindices(fit)
+
+ggplot(data=)
+```
+
+
+###balance
+```{r}
+ggplot(data=even_aggr,aes(y=log10(1/CV_detrend),x=log10(balance_r)))+
+  geom_point()+
+  geom_smooth(method="lm")+
+  facet_wrap(~richness)
+
+modl<-lmer(log10(1/CV_detrend) ~ log10(balance_f) +  richness + resid_temp * resid_nut+ 
+                        (1 | composition), data = even_aggr, REML = FALSE)
+
+modrl<-lmer(log10(1/CV_detrend) ~ log10(balance_r) +  richness + resid_temp * resid_nut+ 
+                        (1 | composition), data = even_aggr, REML = FALSE)
+
+
+mf<-lm(log10(1/CV_detrend) ~ log10(balance_f),data=even_aggr)
+mr<-lm(log10(1/CV_detrend) ~ log10(balance_r)+nutrients,data=even_aggr)
+anova(mf,mr)
+
+summary(modl)
+```
+
+```{r}
+ggplot(data=even_aggr,aes(y=-synchrony_Gross,x=log10(balance_f)))+
+  geom_point()+
+  geom_smooth(method="lm")+
+  facet_wrap(~nutrients)+
+  ggplot(data=even_aggr,aes(y=-synchrony_Loreau,x=log10(balance_f)))+
+  geom_point()+
+  geom_smooth(method="lm")+
+  facet_wrap(~richness)
+```
+
+##window
+
+```{r}
+
+
+# Assume your data frame is called df and has a column named 'day'
+unique_days <- sort(unique(detrend_ts$day))
+window_size <- 13
+n_windows <-length(unique_days) - window_size + 1
+
+# Create list of data frames using sliding window
+window_list <- lapply(1:n_windows, function(i) {
+  days_window <- unique_days[i:(i + window_size - 1)]
+  window_df<-detrend_ts[detrend_ts$day %in% days_window, ]
+  window_df%>%mutate(window=unique_days[i])
+})
+
+
+# windows_ts<-detrend_ts%>%mutate(window=ifelse((day<=30), 1, 31 ))
+# window_list<-split(windows_ts,windows_ts$window)
+
+detrend_coeffs<-lapply(window_list,function(w){
+ 
+  ### Apply threshold
+  
+
+  
+# 1. Create unique species_ID
+df_species_ID <- w %>% 
+  mutate(species_ID = paste(sample_ID, predict_spec, sep = "_"))
+
+# 2. Summarize how many zeros per species_ID
+filtered_df <- df_species_ID %>%
+  group_by(species_ID, sample_ID, predict_spec) %>%  # include predict_spec so we can count species later
+  summarize(number_0 = sum(biomass == 0), .groups = "drop")
+
+# 3. Keep species_IDs with number_0 <= 12
+
+  filtered_df <- filtered_df %>%
+  dplyr::filter(number_0 <= 12)
+
+
+
+# 4. Count how many remaining species per sample_ID
+valid_samples <- filtered_df %>%
+  group_by(sample_ID) %>%
+  dplyr::filter(n() >= 2) %>%  # keep sample_IDs with >=2 species left
+  pull(sample_ID) %>% 
+  unique()
+
+# 5. Filter original df to keep only valid sample_IDs
+df_species_ID_filtered <- df_species_ID %>%
+  dplyr::filter(sample_ID %in% valid_samples,species_ID%in%filtered_df$species_ID)
+
+  
+  # introduce slopes of
+
+
+
+
+
+
+names(df_slopes)[names(df_slopes)=="species_initial"]<-"predict_spec"
+
+slope_ts<-full_join(dplyr::select(df_slopes,nutrients,predict_spec,temperature,slope),df_species_ID_filtered)
+slope_ts<-slope_ts%>%dplyr::mutate(w_slope=biom_contribution*slope,
+                            sign=sign(slope))
+
+slope_ts<-slope_ts%>%group_by(sample_ID,temperature,nutrients,richness,composition,day,tot_biomass)%>%dplyr::summarize(
+  sum_w_slopes=abs(sum(w_slope)),
+                   mean_abs_slope=mean(abs(slope)),
+  sum_abs_slope=sum(abs(slope)),
+  abs_sum_slope=abs(sum(slope)),
+  symmetry=abs(sum(sign)))
+
+
+  aggr_ts <- slope_ts %>%
+  group_by( sample_ID) %>%
+  arrange(day) %>%
+  mutate(
+    # Create a flag for non-zero tot_biomass
+    non_zero_biomass = tot_biomass != 0,
+    # Find the last non-zero day
+    last_non_zero_day = ifelse(any(non_zero_biomass), max(day[non_zero_biomass], na.rm = TRUE), NA),
+    # Find the first zero day after the last non-zero day
+    first_zero_day = ifelse(
+      !is.na(last_non_zero_day),
+      min(day[!non_zero_biomass & day > last_non_zero_day], na.rm = TRUE),
+      NA
+    ),
+    # Flag for days after the first zero day
+    is_after_first_zero_day = ifelse(!is.na(first_zero_day), day > first_zero_day, FALSE)
+  ) %>%
+  ungroup()
+
+aggr_ts<-aggr_ts%>%mutate(rep_var=sub("_[^_]+$", "", sample_ID))
+
+##### Get recalculated balance: check which species are left after 30 days
+
+
+
+
+
+
+
+  complete_aggr<-aggr_ts%>%group_by(composition,nutrients,temperature,sample_ID)%>%reframe(
+  avg_w_sumslopes=mean(sum_w_slopes,na.rm = T),
+  abs_sum_slope=mean(abs_sum_slope),
+  magnitude=mean(mean_abs_slope),
+  symmetry=mean(symmetry),
+  sum_abs_slope=mean(sum_abs_slope),
+  CV=sd(tot_biomass)/(mean(tot_biomass)),
+  sd_tot=sd(tot_biomass),
+  mean_biomass=(mean(tot_biomass)),
+  first_zero_day=unique(first_zero_day))
+
+complete_aggr<-right_join(divergence_df,complete_aggr,by=join_by(composition,nutrients,temperature))%>%
+  mutate(richness=as.factor(richness))
+
+complete_aggr <- complete_aggr %>% mutate(stability = 1/CV) %>%
+  dplyr::rename(balance_f = abs_sum_slope,
+                balance_r = avg_w_sumslopes)
+
+
+
+
+complete_aggr_2<- complete_aggr %>%
+  # Remove the units from the 'nutrients' and 'temperature' columns
+  mutate(
+    nutrients = as.numeric(gsub(" g/L", "", nutrients)),  # Convert nutrients to numeric
+    temperature = gsub(" °C", "", temperature)            # Remove the unit but keep as character
+  ) %>%
+  # Convert temperature ranges to numeric codes using case_when
+  mutate(
+    temperature = case_when(
+      temperature == "18-21" ~ 1,
+      temperature == "22-25" ~ 2,
+      temperature == "25-28" ~ 3# Handle unexpected values with NA
+    )
+  )
+
+
+
+lm_temp_resid<-lm(data=complete_aggr_2, temperature ~ log10(balance_f))
+
+lm_nut_resid<-lm(data=complete_aggr_2, nutrients ~ log10(balance_f))
+
+resid_temp<-lm_temp_resid$residuals
+
+resid_nut<-lm_nut_resid$residuals
+complete_aggr_2<-complete_aggr_2%>%mutate(resid_temp=resid_temp,resid_nut=resid_nut)
+
+
+complete_aggr_2<-complete_aggr_2%>%mutate(resid_temp=resid_temp,resid_nut=resid_nut)
+
+### Get asynchrony measures
+
+async_df <- df_species_ID_filtered
+
+
+async_Gross <- async_df %>% group_by(composition,sample_ID) %>%
+  do(synchrony_Gross = synchrony(., "day", "predict_spec",
+                              "detrended_biomass", metric = "Gross")
+         
+         )
+async_Gross<-dplyr::mutate(async_Gross,synchrony_Gross=synchrony_Gross%>%unlist())
+async_aggr<-left_join(complete_aggr_2,async_Gross,join_by(sample_ID,composition))
+
+
+async_Loreau <- async_df %>% group_by(composition,sample_ID) %>%
+  do(synchrony_Loreau = synchrony(., "day", "predict_spec",
+                              "detrended_biomass", metric = "Loreau"))
+async_Loreau<-dplyr::mutate(async_Loreau,synchrony_Loreau=synchrony_Loreau%>%unlist())
+
+async_aggr<-full_join(async_aggr,async_Loreau,join_by(sample_ID,composition))
+
+
+
+
+
+pop_aggr<-df_species_ID_filtered%>%group_by(sample_ID,predict_spec)%>%summarize(pop_CV=sd(detrended_biomass)/mean(biomass),mean_biom_contribution=mean(biom_contribution,na.rm=T), pop_V= sd(detrended_biomass))
+
+# Lehman & Tilman (2000), THIBAUT & Connolli (2013), Gross et al. (2014)
+
+pop_aggr<-pop_aggr%>%group_by(sample_ID)%>%summarize(sum_sd_squared=mean((sum(pop_V))^2),
+                                                     w_pop_CV=sum(pop_CV*mean_biom_contribution, na.rm=T))
+
+
+pop_aggr<-pop_aggr%>%group_by(sample_ID)%>%left_join(async_aggr,pop_aggr,by="sample_ID")
+
+
+
+pop_aggr<-pop_aggr%>%mutate(window=unique(w$window))
+
+
+ 
+
+
+even_aggr<-df_species_ID_filtered%>%group_by(sample_ID,predict_spec,richness)%>%summarize(mean_biom_contribution=mean(biom_contribution,na.rm=T))%>%ungroup()
+ 
+ 
+# exclude microcosms where all but one species 
+#even_aggr<-even_aggr%>%dplyr::filter(!(mean_biom_contribution%in%c(0,1)))
+ 
+even_aggr<-even_aggr%>%group_by(sample_ID,richness)%>%reframe(H= -sum(mean_biom_contribution*log(mean_biom_contribution)))
+even_aggr<-even_aggr%>%mutate(evenness=H/log(as.numeric(richness)),
+                              richness=as.factor(richness))
+ 
+even_aggr<-full_join(even_aggr,pop_aggr)
+
+})
+
+
+detrend_window<-do.call(rbind,detrend_coeffs)
+
+
+list_detrend_gross<- lapply(detrend_coeffs, function(df) {
+
+      
+        model <- lm( -synchrony_Gross ~log10(balance_f)+nutrients, data = df)
+        ci <- confint(model)["log10(balance_f)", , drop = FALSE]
+        ci_df <- as.data.frame(ci)
+        names(ci_df) <- c("ci_lower", "ci_upper")
+
+        frame <- data.frame(
+          estimate = coef(model)[["log10(balance_f)"]],ci_df,window=unique(df$window), df_resid=model$df.residual,
+          r_squared = summary(model)$r.squared,
+          n_obs = nobs(model)
+        )
+
+        return(frame)  
+})
+
+gross_detrend_coeffs<-do.call(rbind,list_detrend_gross)
+
+
+#### Loreau
+
+list_detrend_loreau<-sapply(c(2,3,4),function(r){
+  
+  
+richness_Lo<- lapply(detrend_coeffs, function(df) {
+
+  df_r<-df%>%dplyr::filter(richness==r)    
+  
+        model <- lm( -synchrony_Loreau ~log10(balance_f)+nutrients, data = df_r)
+        ci <- confint(model)["log10(balance_f)", , drop = FALSE]
+        ci_df <- as.data.frame(ci)
+        names(ci_df) <- c("ci_lower", "ci_upper")
+
+        frame <- data.frame(
+          estimate = coef(model)[["log10(balance_f)"]],ci_df,window=unique(df_r$window), df_resid=model$df.residual,
+          r_squared = summary(model)$r.squared,
+          n_obs = nobs(model)
+        )
+
+        return(frame)  
+})
+
+  richness_Lo<-do.call(rbind,richness_Lo)
+  richness_Lo<-richness_Lo%>%mutate(richness=r)
+
+  
+},simplify=F)
+
+loreau_detrend_coeffs<-do.call(rbind,list_detrend_loreau)
+
+```
+
+## window plots
+```{r}
+ plot_detrend_Gross<-ggplot(data=gross_detrend_coeffs,aes(x=window,y=estimate))+
+    geom_point()+
+    geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.2) +
+    geom_hline(yintercept=0,linetype="dashed")+
+    geom_text(aes(label = paste0("n = ", n_obs)),
+            vjust = -3, size = 3,hjust=1.25) +
+    theme_bw()+
+    labs(title = "Effect of log(balance_f) on Gross",
+         x = "Start window (day)")
+
+plot_detrend_Gross
+
+ plot_detrend_Loreau<-ggplot(data=loreau_detrend_coeffs,aes(x=window,y=estimate))+
+    geom_point()+
+    geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.2) +
+    geom_hline(yintercept=0,linetype="dashed")+
+    geom_text(aes(label = paste0("n = ", n_obs)),
+            vjust = -3, size = 3,hjust=1.25) +
+    theme_bw()+
+   facet_wrap(~richness)+
+    labs(title = "Effect of log(balance_f) on Gross",
+         x = "Start window (day)")
+    
+    plot_detrend_Loreau
+    
+
+  ggplot(data=detrend_window,aes(y=-synchrony_Loreau,x=log10(balance_f)))+
+  geom_point()+
+  geom_smooth(method="lm")+
+  facet_wrap(~window)
+```
+
